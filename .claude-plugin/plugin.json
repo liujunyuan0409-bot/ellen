@@ -1,0 +1,9 @@
+{
+  "name": "xhs-content-research",
+  "version": "0.1.0",
+  "description": "小红书内容调研 skill：覆盖选题调研、竞品账号分析、单篇笔记拆解三种模式，混合采集（Playwright/手动/第三方导出），产出 Bitable 素材库 + markdown 洞察报告与给 xhs-visual-director 的选题简报。",
+  "author": {
+    "name": "Ellen Liu",
+    "email": "ellen.liu@klook.com"
+  }
+}
