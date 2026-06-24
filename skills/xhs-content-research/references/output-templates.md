@@ -201,3 +201,17 @@
 
 > 本简报可直接输入 `xhs-visual-director` skill，驱动封面设计与图文排版。
 ```
+
+---
+
+## 交付形态选项（OUTPUT 阶段按需）
+
+`report.md` 是基础产物。用户要"便于查看 / 分享 / 手机看"时，按需再转：
+
+| 形态 | 适用 | 做法 |
+|------|------|------|
+| **Markdown** | 默认、归档 | 直接写 `report.md` |
+| **飞书云文档** | 团队分享、与 Bitable 同生态、手机飞书 App 看 | `docx_builtin_import` 把 markdown 全文导入成原生 docx（`file_name` ≤27 字），返回 docx 链接 |
+| **Artifact 移动网页** | 自己手机随时看、阅读体验最佳 | 写一个手机优化的自包含 HTML（宽表放 `overflow-x:auto`、ASCII 漏斗图重排成竖版卡片流、关键数据卡），调 Artifact 发布拿链接 |
+
+> 手机端两条硬要求：宽表格务必放进横向滚动容器；ASCII 流程图重排成卡片流，别让正文横向溢出。
