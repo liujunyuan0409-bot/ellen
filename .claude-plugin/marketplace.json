@@ -1,0 +1,20 @@
+{
+  "name": "ellen",
+  "description": "Ellen Liu 的个人插件 marketplace",
+  "owner": {
+    "name": "Ellen Liu",
+    "email": "ellen.liu@klook.com"
+  },
+  "plugins": [
+    {
+      "name": "xhs-content-research",
+      "description": "小红书内容调研 skill：选题调研 / 竞品账号分析（内容打法 + 商业模式 lens）/ 单篇拆解，混合采集，产出 Bitable 素材库 + 调研报告与选题简报。",
+      "version": "0.1.0",
+      "source": ".",
+      "author": {
+        "name": "Ellen Liu",
+        "email": "ellen.liu@klook.com"
+      }
+    }
+  ]
+}
