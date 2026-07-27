@@ -72,7 +72,8 @@ description: 小红书内容调研。覆盖选题调研、竞品账号分析、�
 对每篇笔记填写 §A 共用打标字段、§B 类型分叉字段；汇总后提炼 §C 跨篇洞察六维；各模式附加 §D 特异性分析（热力分布 / 账号 lens 指标 / 逐镜精拆）。所有跨篇洞察与变现结论带**证据等级**（实测/推断/未观测）。Rubric 全文见 [references/analysis-rubric.md](references/analysis-rubric.md)。
 
 **⑤ OUTPUT — 输出调研报告与简报**
-按模板生成调研报告（`analysis/xhs_<主题>_<日期>/report.md`）及 xhs-visual-director 选题简报。用户需"便于查看/分享/手机看"时，再按需转飞书云文档（`docx_builtin_import`）或 Artifact 移动网页。模板与交付形态见 [references/output-templates.md](references/output-templates.md)。
+按模板生成调研报告（`analysis/xhs_<主题>_<日期>/report.md`）及 xhs-visual-director 选题简报。用户需"便于查看/分享/手机看"时，再按需转飞书云文档（`docx_builtin_import`）或 Artifact 移动网页。
+**云端形态不适用时改出本地文件**：用户要的是文件而非链接、要进邮件附件、要离线看、当前环境拿不到发布能力，或结论需要收件人自己排序筛选加列——直接写本地 `report.html` / `report.xlsx` 到调研目录，不必先试云端再降级。判据、骨架与 Excel 分 sheet 做法见 [references/output-templates.md](references/output-templates.md)「交付形态选项」。
 
 ---
 

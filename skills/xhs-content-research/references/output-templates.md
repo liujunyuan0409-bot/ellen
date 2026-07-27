@@ -213,5 +213,73 @@
 | **Markdown** | 默认、归档 | 直接写 `report.md` |
 | **飞书云文档** | 团队分享、与 Bitable 同生态、手机飞书 App 看 | `docx_builtin_import` 把 markdown 全文导入成原生 docx（`file_name` ≤27 字），返回 docx 链接 |
 | **Artifact 移动网页** | 自己手机随时看、阅读体验最佳 | 写一个手机优化的自包含 HTML（宽表放 `overflow-x:auto`、ASCII 漏斗图重排成竖版卡片流、关键数据卡），调 Artifact 发布拿链接 |
+| **本地 HTML 文件** | 要一个能双击打开 / 进邮件附件 / 离线看的成品页 | 补全 `<!doctype html>` 骨架的自包含 HTML，写进调研目录（见下「本地 HTML」） |
+| **本地 Excel 文件** | 结论要交给人二次加工：排序、筛选、透视、自己加列继续算 | openpyxl / pandas 写 `.xlsx`，一个 sheet 一个视角（见下「本地 Excel」） |
 
 > 手机端两条硬要求：宽表格务必放进横向滚动容器；ASCII 流程图重排成卡片流，别让正文横向溢出。
+
+### 什么时候改走本地文件
+
+云端形态（飞书 / Artifact）**不是默认更优**。命中以下任一条就直接选本地文件，不必先试云端再降级：
+
+- 用户明确要「文件」而不是链接（"发我个 excel"、"给我个 html"）
+- 产物要进邮件附件、要塞进别的系统、或要给没有飞书账号的人看
+- 需要离线查看，或内容不方便上云
+- 当前环境拿不到对应发布能力（headless / cron 场景下，交互式授权的 MCP 可能不可用）
+- 结论需要收件人自己排序筛选、加列继续算——这类**天生是 Excel**，硬转成文档反而退化
+
+本地产物一律落在该次调研目录 `analysis/xhs_<主题>_<日期>/`，与 `report.md` 同级；交付时给用户**绝对路径**（不是相对路径，用户不一定在该目录下）。
+
+### 本地 HTML
+
+与 Artifact 的关键差别：**Artifact 只吃 HTML 片段，`<!doctype html>` / `<html>` / `<head>` 由平台发布时包壳；本地文件必须自己补全**。照 Artifact 格式写完直接存本地，会缺 charset 与 viewport——中文可能乱码、手机上不按宽度缩放。
+
+本地文件最小骨架（其余内容与 Artifact 版一致，同样遵守上面手机端两条硬要求）：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ 报告标题 }}</title>
+<style>/* 自包含样式，勿引外部 CDN/字体，否则离线打开会掉样式 */</style>
+</head>
+<body>
+<!-- 报告正文 -->
+</body>
+</html>
+```
+
+图片同理：本地 HTML 若要带封面图，用 `data:` URI 内嵌或与 HTML 同目录相对引用，别直接引小红书 CDN 链接（会失效，且离线打不开）。
+
+### 本地 Excel
+
+一个 sheet 一个视角，别把所有东西堆一张表：
+
+| Sheet | 内容 |
+|-------|------|
+| `笔记明细` | 一行一篇，字段同 Bitable 素材库（见 bitable-schema.md），含采集方式列 |
+| `跨篇洞察` | §C 六维洞察，一行一条，带证据等级列 |
+| 模式专属 | 选题调研→`角度热力矩阵`；竞品账号→`账号对比`（粉丝/发布频率/爆款率/选题分布）；单篇拆解→`逐段精拆` |
+
+实测可用：`openpyxl 3.1.5` + `pandas 2.3.3`（`/opt/anaconda3/bin/python3.13` 与 `python3` 均可）。
+
+```python
+import pandas as pd
+
+out = f"{research_dir}/report.xlsx"          # 与 report.md 同级
+with pd.ExcelWriter(out, engine="openpyxl") as w:
+    for sheet, df in {"笔记明细": notes_df, "跨篇洞察": insights_df}.items():
+        df.to_excel(w, sheet_name=sheet, index=False)
+        ws = w.sheets[sheet]
+        ws.freeze_panes = "A2"                                  # 冻结表头
+        for col in ws.columns:                                  # 列宽自适应（中文按 2 字宽估）
+            width = max(len(str(c.value or "")) for c in col) + 2
+            ws.column_dimensions[col[0].column_letter].width = min(width, 50)
+```
+
+两个硬要求：
+
+- **互动数写成数值型，不要字符串**。写成 `"1.2万"` 或带逗号的文本，收件人就没法排序和求和——这正是他们要 Excel 的原因。原始值为「万」单位时换算成整数落列，另留一列存原始展示值。
+- **缺失字段留空单元格**，不填 `N/A` / `-` / `未知`（与采集阶段「留空不编造」一致；填了占位符会污染排序和计数）。
