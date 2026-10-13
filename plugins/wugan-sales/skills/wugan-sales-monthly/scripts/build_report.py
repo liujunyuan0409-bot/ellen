@@ -165,7 +165,7 @@ def write_sheet(ws, lines, note=None):
     ws.sheet_view.showGridLines = False
     ws.append(HEADER)
     style_header(ws[1])
-    ws.row_dimensions[1].height = 30
+    ws.row_dimensions[1].height = 40
     cat_rows = []
     for level, vals in lines:
         ws.append(vals)
@@ -201,7 +201,7 @@ def write_sheet(ws, lines, note=None):
                                       DataBarRule(start_type="num", start_value=0, end_type="num", end_value=1, color=C_BAR))
     if note:
         add_note(ws, note, len(HEADER))
-    for col, w in zip("ABCDEFG", [22, 34, 16, 10, 11, 16, 16]):
+    for col, w in zip("ABCDEFG", [22, 34, 16, 10, 11, 22, 16]):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
 
