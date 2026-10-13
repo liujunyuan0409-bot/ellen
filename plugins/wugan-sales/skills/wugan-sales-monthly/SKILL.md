@@ -6,7 +6,8 @@ description: Use when the user asks for 五感咖啡 / 五感 monthly sales stat
 # 五感月度销售表
 
 ## Overview
-从戴维盈动商家后台「运营数据 → 销售汇总」按月取商品级明细，按 `rules.yaml` 清洗成 **分类 → 商品 → 规格** 三层表，追加到用户的工作簿（默认 `~/Desktop/五感销售数据统计.xlsx`）。
+从戴维盈动商家后台「运营数据 → 销售汇总」按月取商品级明细，按 `rules.yaml` 清洗成 **分类 → 商品 → 规格** 三层表，写进**当年的年度文件** `~/Desktop/YYYY年五感销售数据统计.xlsx`（一年一个文件，不存在就新建）。
+`~/Desktop/五感销售数据统计.xlsx` 是 2025 年手工版（8–12 月），只读不写，但新品识别会参考它。
 **口径只认 `rules.yaml`**；脚本对不平、遇到没登记的规格选项会直接停下，不要绕过。
 
 ## 已验证的口径（2025-08 ~ 12 与手工表逐行对平）
@@ -25,13 +26,13 @@ description: Use when the user asks for 五感咖啡 / 五感 monthly sales stat
 3. **取数**：读 `scripts/fetch_month.js`，把 `__MONTH__` 替换成 `YYYY-MM`，整段作为 `browser_evaluate` 的 function，`filename` 存到 `.playwright-mcp/wugan_raw_YYYY-MM.json`（Playwright 只能写到它允许的目录）。结果里有 `error` 就按提示处理（`NOT_LOGGED_IN` → 回第 2 步）。
 4. **试跑**：
    ```bash
-   python -I scripts/build_report.py --raw <raw.json> --workbook <xlsx> --dry-run
+   python -I scripts/build_report.py --raw <raw.json> --dry-run   # 文件按 raw 的年份自动定位；--dir 改目录
    ```
    需要 `openpyxl` 和 `pyyaml`。
    - 退出码 2 `UNKNOWN_SPEC_OPTIONS`：把列出的选项给用户看，按用户意见补进 `rules.yaml` 的 keep/drop 后重跑。明显属于冰量/浓度/奶/尺码/克重的可以直接归 drop，但要在回复里列出来。
    - 退出码 3 `RECON_FAIL`：**不出表**，排查原因。
-   - 摘要里的「新商品 / 新分类」：问用户要不要改名或改分类（写进 `product_rename` / `reclassify`）。
-5. **写入**：去掉 `--dry-run` 再跑一次。脚本会先把原文件备份到同目录 `_backup/`，再新增三个 sheet：当月主表、`-1元计价`、`-异常与调整`。sheet 已存在时退出码 4，只有用户确认后才加 `--replace`。
+   - 摘要里的「新商品 / 新分类」：问用户要不要改名或改分类（写进 `product_rename` / `reclassify`）。新品 = 同目录所有年度文件里**此前月份**没出现过；补历史月份时按月份从早到晚依次写入，否则新品会被多报。
+5. **写入**：去掉 `--dry-run` 再跑一次。文件已存在时会先备份到同目录 `_backup/`，再新增三个 sheet：当月主表、`-1元计价`、`-异常与调整`，并按月份自动排好顺序。sheet 已存在时退出码 4，只有用户确认后才加 `--replace`。
 6. **回复用户**：主表总额、1 元计价金额、和上月比较、异常与调整的要点。
 
 ## rules.yaml 各项

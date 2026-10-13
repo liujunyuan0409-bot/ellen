@@ -6,6 +6,7 @@ import argparse
 import collections
 import datetime as dt
 import json
+import re
 import pathlib
 import shutil
 import sys
@@ -112,11 +113,23 @@ def flatten(tree):
     return out
 
 
-def history_names(wb, exclude):
-    """已有 sheet 里出现过的 (商品名) 和 (商品名, 规格)，用来识别新品。重跑当月时排除当月自己的 sheet。"""
+FILE_PATTERN = "{year}年五感销售数据统计.xlsx"
+SHEET_RE = re.compile(r"^(\d{4})年(\d{1,2})月(-.*)?$")
+
+
+def sheet_month(title):
+    """「2026年9月」「2026年9月-异常与调整」→ (2026, 9)；旧版无年份 sheet（「8月」）返回 None。"""
+    mt = SHEET_RE.match(title)
+    return (int(mt.group(1)), int(mt.group(2))) if mt else None
+
+
+def history_names(books, target):
+    """target 月之前所有 sheet 里出现过的 商品名 / (商品名, 规格)，用来识别新品。
+    books：同目录下所有年度文件（含旧版无年份文件）；旧版 sheet 无年份，视为更早。"""
     prods, specs = set(), set()
-    for ws in wb.worksheets:
-        if ws.title == exclude or ws.title.startswith(exclude + "-"):
+    for ws in (w for wb in books for w in wb.worksheets):
+        sm = sheet_month(ws.title)
+        if sm is not None and sm >= target:
             continue
         rows = [[c.value for c in r] for r in ws.iter_rows()]
         rows = [r for r in rows if any(v is not None for v in r)]
@@ -134,6 +147,18 @@ def history_names(wb, exclude):
             elif r[ci] and cur:
                 specs.add((cur, str(r[ci]).strip()))
     return prods, specs
+
+
+def sort_month_sheets(wb):
+    """按月份排列：主表 → -1元计价 → -异常与调整；无年份的旧 sheet 留在前面。"""
+    suffix_rank = {None: 0, "-1元计价": 1, "-异常与调整": 2}
+
+    def key(ws):
+        mt = SHEET_RE.match(ws.title)
+        if not mt:
+            return (0, 0, 0, 0)
+        return (1, int(mt.group(1)), int(mt.group(2)), suffix_rank.get(mt.group(3), 3))
+    wb._sheets.sort(key=key)
 
 
 # ---- 样式 ----
@@ -240,7 +265,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", required=True)
     ap.add_argument("--rules", default=str(pathlib.Path(__file__).resolve().parent.parent / "rules.yaml"))
-    ap.add_argument("--workbook", required=True)
+    ap.add_argument("--dir", default=str(pathlib.Path.home() / "Desktop"), help="年度文件所在目录")
+    ap.add_argument("--workbook", help="默认 <dir>/YYYY年五感销售数据统计.xlsx（一年一个文件，不存在就新建）")
     ap.add_argument("--sheet", help="默认 YYYY年M月")
     ap.add_argument("--dry-run", action="store_true", help="只校验+打印摘要，不写文件")
     ap.add_argument("--replace", action="store_true", help="同名 sheet 已存在时覆盖（仍会先备份）")
@@ -278,8 +304,16 @@ def main():
     main_lines = flatten(aggregate(main_rows, cat_order))
     one_lines = flatten(aggregate(one_rows, cat_order)) if one_rows else []
 
-    wb = openpyxl.load_workbook(a.workbook)
-    prods, specs = history_names(wb, sheet)
+    src = pathlib.Path(a.workbook) if a.workbook else pathlib.Path(a.dir) / FILE_PATTERN.format(year=y)
+    is_new = not src.exists()
+    if is_new:
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+    else:
+        wb = openpyxl.load_workbook(src)
+    others = [openpyxl.load_workbook(f, read_only=True) for f in sorted(src.parent.glob("*五感销售数据统计*.xlsx"))
+              if f.resolve() != src.resolve() and not f.name.startswith("~$")]
+    prods, specs = history_names([wb] + others, (int(y), int(m)))
 
     # 异常与调整
     issues = []
@@ -303,10 +337,10 @@ def main():
         for r in main_rows:
             if r["title"] not in prods and r["title"] not in seen_new:
                 seen_new.add(r["title"])
-                issues.append(["新商品(历史sheet未出现)", r["cat"], r["title"], "", "", "", ""])
+                issues.append(["新商品(此前月份未出现)", r["cat"], r["title"], "", "", "", ""])
             if r["spec"] and (r["title"], r["spec"]) not in specs and r["title"] in prods and (r["title"], r["spec"]) not in seen_new:
                 seen_new.add((r["title"], r["spec"]))
-                issues.append(["新规格(历史sheet未出现)", r["cat"], r["title"], r["spec"], "", "", ""])
+                issues.append(["新规格(此前月份未出现)", r["cat"], r["title"], r["spec"], "", "", ""])
     for c in {r["cat"] for r in rows if r["cat"] not in cat_order}:
         issues.append(["新分类(未在category_order)", c, "", "", "", "", ""])
 
@@ -328,11 +362,12 @@ def main():
         print(f"SHEET_EXISTS {sheet} 已存在，确认要覆盖再加 --replace")
         sys.exit(4)
 
-    src = pathlib.Path(a.workbook)
-    bak_dir = src.parent / "_backup"
-    bak_dir.mkdir(exist_ok=True)
-    bak = bak_dir / f"{src.stem}_{dt.datetime.now():%Y%m%d_%H%M%S}{src.suffix}"
-    shutil.copy2(src, bak)
+    bak = None
+    if not is_new:
+        bak_dir = src.parent / "_backup"
+        bak_dir.mkdir(exist_ok=True)
+        bak = bak_dir / f"{src.stem}_{dt.datetime.now():%Y%m%d_%H%M%S}{src.suffix}"
+        shutil.copy2(src, bak)
 
     for name in (sheet, f"{sheet}-1元计价", f"{sheet}-异常与调整"):
         if name in wb.sheetnames:
@@ -347,8 +382,10 @@ def main():
     if hdr_real is not None:
         recon.append(("后台页面顶部实际销售额", f"{float(hdr_real):,.2f} 元" + (f"（与明细差 {hdr_diff}，以明细为准）" if hdr_diff else "  ✓ 一致")))
     write_issues(wb.create_sheet(f"{sheet}-异常与调整"), issues, recon)
+    sort_month_sheets(wb)
+    wb.active = wb.sheetnames.index(sheet)
     wb.save(src)
-    print(f"已写入 {src} → sheet「{sheet}」；备份 {bak}")
+    print(f"已写入 {src} → sheet「{sheet}」；" + (f"备份 {bak}" if bak else "新建文件"))
 
 
 if __name__ == "__main__":
