@@ -622,7 +622,7 @@ def main():
     ap.add_argument("--summary-only", metavar="YEAR_XLSX", help="只重建该年度文件的「年度汇总」，不需要 --raw")
     ap.add_argument("--raw")
     ap.add_argument("--rules", default=str(pathlib.Path(__file__).resolve().parent.parent / "rules.yaml"))
-    ap.add_argument("--dir", default=str(pathlib.Path.home() / "Desktop"), help="年度文件所在目录")
+    ap.add_argument("--dir", default=str(pathlib.Path.home() / "Desktop" / "五感专题分析"), help="年度文件所在目录（默认 ~/Desktop/五感专题分析）")
     ap.add_argument("--workbook", help="默认 <dir>/YYYY年五感销售数据统计.xlsx（一年一个文件，不存在就新建）")
     ap.add_argument("--sheet", help="默认 YYYY年M月")
     ap.add_argument("--dry-run", action="store_true", help="只校验+打印摘要，不写文件")
