@@ -12,7 +12,8 @@ import sys
 
 import openpyxl
 import yaml
-from openpyxl.styles import Font, PatternFill
+from openpyxl.formatting.rule import DataBarRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 HEADER = ["分类", "商品名称", "规格", "单价", "实际销量", "实际销售额(不含退款、优惠)", "实际销售额占比"]
 BLANK_SPEC = "(空白)"
@@ -135,26 +136,102 @@ def history_names(wb, exclude):
     return prods, specs
 
 
+# ---- 样式 ----
+FONT = "微软雅黑"
+C_HEAD, C_CAT, C_TOTAL, C_LINE, C_MUTED, C_BAR = "5B4636", "F3EDE6", "E8DED3", "E3DCD4", "8C8C8C", "C9A27E"
+THIN = Side(style="thin", color=C_LINE)
+ISSUE_FILL = {"新": "DDEBF7", "1元": "FCE4D6", "0元": "EDEDED", "改": "E2EFDA", "去首尾": "E2EFDA"}
+
+
+def style_header(row):
+    for c in row:
+        c.font = Font(name=FONT, bold=True, color="FFFFFF", size=11)
+        c.fill = PatternFill("solid", fgColor=C_HEAD)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def add_note(ws, text, ncols):
+    ws.append([])
+    ws.append([text])
+    r = ws.max_row
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncols)
+    c = ws.cell(r, 1)
+    c.font = Font(name=FONT, italic=True, size=9, color=C_MUTED)
+    c.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[r].height = 32
+
+
 def write_sheet(ws, lines, note=None):
+    ws.sheet_view.showGridLines = False
     ws.append(HEADER)
-    for c in ws[1]:
-        c.font = Font(bold=True)
-    cat_fill = PatternFill("solid", fgColor="FFF2CC")
+    style_header(ws[1])
+    ws.row_dimensions[1].height = 30
+    cat_rows = []
     for level, vals in lines:
         ws.append(vals)
-        row = ws[ws.max_row]
-        if level in (0, -1):
-            for c in row:
-                c.font = Font(bold=True)
-                if level == 0:
-                    c.fill = cat_fill
+        r = ws.max_row
+        row = ws[r]
+        if level == 0:
+            font, fill = Font(name=FONT, bold=True, size=11), PatternFill("solid", fgColor=C_CAT)
+            cat_rows.append(r)
+        elif level == -1:
+            font, fill = Font(name=FONT, bold=True, size=11), PatternFill("solid", fgColor=C_TOTAL)
+        elif level == 2:
+            font, fill = Font(name=FONT, size=9, color=C_MUTED), None
+        else:
+            font, fill = Font(name=FONT, size=10), None
+        for c in row:
+            c.font = font
+            if fill:
+                c.fill = fill
+            c.border = Border(bottom=THIN, top=Side(style="medium", color=C_HEAD) if level == -1 else None)
+            c.alignment = Alignment(vertical="center")
+        if level == 2:
+            row[2].alignment = Alignment(indent=1, vertical="center")
+        if level in (1, 2):  # 分级折叠：1=只看分类，2=到商品，3=全部
+            ws.row_dimensions[r].outline_level = level
+        ws.row_dimensions[r].height = 22 if level in (0, -1) else 18
         row[3].number_format = "0.00"
+        row[4].number_format = "#,##0"
         row[5].number_format = "#,##0.00"
-        row[6].number_format = "0.00%"
+        row[6].number_format = "0.0%"
+    ws.sheet_properties.outlinePr.summaryBelow = False
+    if cat_rows:  # 分类占比加数据条（分类之间可比，合计 100%）
+        ws.conditional_formatting.add(" ".join(f"G{r}" for r in cat_rows),
+                                      DataBarRule(start_type="num", start_value=0, end_type="num", end_value=1, color=C_BAR))
     if note:
-        ws.append([])
-        ws.append([note])
-    for col, w in zip("ABCDEFG", [20, 32, 14, 10, 10, 24, 14]):
+        add_note(ws, note, len(HEADER))
+    for col, w in zip("ABCDEFG", [22, 34, 16, 10, 11, 16, 16]):
+        ws.column_dimensions[col].width = w
+    ws.freeze_panes = "A2"
+
+
+def write_issues(ws, issues, recon):
+    ws.sheet_view.showGridLines = False
+    ws.append(["类型", "分类", "商品", "规格/选项", "说明", "实际销量", "实际销售额"])
+    style_header(ws[1])
+    ws.row_dimensions[1].height = 28
+    for i in issues:
+        ws.append(i)
+        row = ws[ws.max_row]
+        tag = next((v for k, v in ISSUE_FILL.items() if str(i[0]).startswith(k)), None)
+        for c in row:
+            c.font = Font(name=FONT, size=10)
+            c.border = Border(bottom=THIN)
+            c.alignment = Alignment(vertical="center", wrap_text=True)
+        if tag:
+            row[0].fill = PatternFill("solid", fgColor=tag)
+        row[6].number_format = "#,##0.00"
+    ws.append([])
+    ws.append(["对数结果"])
+    ws.cell(ws.max_row, 1).font = Font(name=FONT, bold=True, size=11, color=C_HEAD)
+    for label, value in recon:
+        ws.append([label, value])
+        ws.merge_cells(start_row=ws.max_row, start_column=2, end_row=ws.max_row, end_column=5)
+        for c in ws[ws.max_row]:
+            c.font = Font(name=FONT, size=10)
+            c.border = Border(bottom=THIN)
+    for col, w in zip("ABCDEFG", [24, 18, 32, 26, 34, 10, 12]):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
 
@@ -265,19 +342,11 @@ def main():
     write_sheet(wb.create_sheet(sheet), main_lines, note)
     if one_lines:
         write_sheet(wb.create_sheet(f"{sheet}-1元计价"), one_lines, "补差价/自定义金额类商品：后台单价 1 元，销量=金额，不代表杯数/件数")
-    ws = wb.create_sheet(f"{sheet}-异常与调整")
-    ws.append(["类型", "分类", "商品", "规格/选项", "说明", "实际销量", "实际销售额"])
-    for c in ws[1]:
-        c.font = Font(bold=True)
-    for i in issues:
-        ws.append(i)
-    ws.append([])
-    ws.append(["对数", "后台明细合计", "", "", f"{raw_qty} 件 / {raw_c/100:.2f} 元", "", ""])
-    ws.append(["对数", "主表 + 1元计价", "", "", f"{got_qty} 件 / {got_c/100:.2f} 元", "", ""])
+    recon = [("后台明细合计", f"{raw_qty:,} 件 / {raw_c/100:,.2f} 元"),
+             ("主表 + 1元计价", f"{got_qty:,} 件 / {got_c/100:,.2f} 元  ✓ 一致")]
     if hdr_real is not None:
-        ws.append(["对数", "后台页面顶部实际销售额", "", "", f"{hdr_real}（差 {hdr_diff}）", "", ""])
-    for col, w in zip("ABCDEFG", [26, 20, 32, 28, 36, 10, 12]):
-        ws.column_dimensions[col].width = w
+        recon.append(("后台页面顶部实际销售额", f"{float(hdr_real):,.2f} 元" + (f"（与明细差 {hdr_diff}，以明细为准）" if hdr_diff else "  ✓ 一致")))
+    write_issues(wb.create_sheet(f"{sheet}-异常与调整"), issues, recon)
     wb.save(src)
     print(f"已写入 {src} → sheet「{sheet}」；备份 {bak}")
 
