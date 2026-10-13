@@ -111,10 +111,12 @@ def flatten(tree):
     return out
 
 
-def history_names(wb):
-    """已有 sheet 里出现过的 (商品名) 和 (商品名, 规格)，用来识别新品。"""
+def history_names(wb, exclude):
+    """已有 sheet 里出现过的 (商品名) 和 (商品名, 规格)，用来识别新品。重跑当月时排除当月自己的 sheet。"""
     prods, specs = set(), set()
     for ws in wb.worksheets:
+        if ws.title == exclude or ws.title.startswith(exclude + "-"):
+            continue
         rows = [[c.value for c in r] for r in ws.iter_rows()]
         rows = [r for r in rows if any(v is not None for v in r)]
         if not rows:
@@ -200,7 +202,7 @@ def main():
     one_lines = flatten(aggregate(one_rows, cat_order)) if one_rows else []
 
     wb = openpyxl.load_workbook(a.workbook)
-    prods, specs = history_names(wb)
+    prods, specs = history_names(wb, sheet)
 
     # 异常与调整
     issues = []
