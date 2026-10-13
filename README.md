@@ -1,40 +1,31 @@
-# xhs-content-research
+# ellen · Claude Code 插件集
 
-小红书内容调研 skill，作为 Claude Code 插件分发。
+个人 Claude Code 插件 marketplace。每个插件相互独立，可以单独安装。
 
-调研小红书内容的**采集、结构化分析与洞察输出**，是 `xhs-visual-director`（出图/排版）的上游——产出选题简报后可直接喂给视觉导演 skill。
+## 插件目录
 
-## 三种调研模式
+### 内容创作
 
-| 模式 | 用途 |
+| 插件 | 用途 |
 |------|------|
-| **选题调研** | 给定主题/品类，找爆款角度与内容机会 |
-| **竞品账号** | 分析指定账号的内容策略、发布节奏、爆款规律 |
-| **单篇拆解** | 给定笔记链接，逐段/逐镜精拆套路 |
+| [xhs-content-research](plugins/xhs-content-research) | 小红书选题调研、竞品账号分析、单篇拆解 |
 
-## 流水线
+### 经营数据
 
-```
-GOAL → GATHER → NORMALIZE → ANALYZE → OUTPUT
-```
-
-- **GATHER** — 混合采集：Playwright 自动化（首选）→ 用户手动喂（降级）→ 第三方导出（可选）
-- **ANALYZE** — 固定 rubric 打标 + 跨篇洞察六维（含视频专属维度）
-- **OUTPUT** — 原始数据进 Bitable 素材库，洞察出 markdown 报告 + visual-director 简报
-
-## 目录结构
-
-```
-.claude-plugin/plugin.json          插件清单
-skills/xhs-content-research/
-  ├─ SKILL.md                       router + 五步流水线总控
-  └─ references/
-     ├─ analysis-rubric.md          两层分析 rubric
-     ├─ gathering.md                三种采集方式 playbook
-     ├─ bitable-schema.md           素材库表字段定义
-     └─ output-templates.md         报告 + 简报模板
-```
+| 插件 | 用途 |
+|------|------|
+| [wugan-sales](plugins/wugan-sales) | 五感咖啡月度销售表（商家后台取数 → 清洗 → Excel） |
 
 ## 安装
 
-作为 Claude Code 插件安装本 repo，或手动复制 `skills/xhs-content-research/` 到 `~/.claude/skills/`。
+```
+/plugin marketplace add liujunyuan0409-bot/ellen
+/plugin install xhs-content-research@ellen
+/plugin install wugan-sales@ellen
+```
+
+## 新增插件
+
+1. 新建 `plugins/<插件名>/`，放 `.claude-plugin/plugin.json`、`README.md`、`skills/<skill名>/SKILL.md`
+2. 在 `.claude-plugin/marketplace.json` 的 `plugins` 里登记，写上 `category`
+3. 在本 README 对应分类下加一行；没有合适的分类就新建一个

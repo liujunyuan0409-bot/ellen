@@ -1,0 +1,9 @@
+{
+  "name": "wugan-sales",
+  "version": "0.1.0",
+  "description": "五感咖啡月度销售表：从戴维盈动商家后台「销售汇总」按月取数，按 rules.yaml 清洗成 分类→商品→规格 三层表，对数校验后追加到 Excel 工作簿。",
+  "author": {
+    "name": "Ellen Liu",
+    "email": "ellen.liu@klook.com"
+  }
+}
