@@ -227,7 +227,7 @@ def write_sheet(ws, lines, note=None):
                                       DataBarRule(start_type="num", start_value=0, end_type="num", end_value=1, color=C_BAR))
     if note:
         add_note(ws, note, len(HEADER))
-    for col, w in zip("ABCDEFG", [22, 34, 16, 10, 11, 22, 16]):
+    for col, w in zip("ABCDEFG", [22, 34, 16, 10, 12, 22, 19]):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
 
@@ -257,7 +257,7 @@ def write_issues(ws, issues, recon):
         for c in ws[ws.max_row]:
             c.font = Font(name=FONT, size=10)
             c.border = Border(bottom=THIN)
-    for col, w in zip("ABCDEFG", [24, 18, 32, 26, 34, 10, 12]):
+    for col, w in zip("ABCDEFG", [24, 18, 32, 26, 34, 12, 14]):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
 
@@ -349,40 +349,80 @@ def ops_row(raw, ex, main_qty, main_amt):
             _f(summ.get("amount_after")) if summ else None, round(main_amt, 2), main_qty, "；".join(ex["notes"])]
 
 
-def upsert_ops(wb, row):
-    rows = {}
-    if OPS_SHEET in wb.sheetnames:
-        for r in list(wb[OPS_SHEET].iter_rows(min_row=2, values_only=True)):
-            if r and r[0]:
-                rows[r[0]] = list(r[:len(OPS_COLS)])
+OPS_COUNT_COLS = {"营业天数", "订单数", "新客单数", "老客单数", "充值笔数", "主表件数"}
+OPS_MONEY_COLS = {"订单实收", "余额支付", "储值充值", "余额消费", "期末储值余额", "主表销售额"}
+MONTH_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
+
+
+def text_width(text, cjk=2.2, other=1.15):
+    """估算单行显示所需列宽：中文约 2.2、其他字符约 1.15 个宽度单位。"""
+    return sum(cjk if ord(ch) > 0x2E80 else other for ch in str(text))
+
+
+def fit_widths(ws, headers, data_rows, pad=3, min_w=8, max_w=60):
+    """表头单行不换行：列宽 ≥ 表头文字宽度，也照顾数据宽度。"""
+    for i, h in enumerate(headers):
+        need = text_width(h) + pad
+        for r in data_rows:
+            v = r[i] if i < len(r) else None
+            if v is None:
+                continue
+            shown = f"{v:,.2f}" if isinstance(v, float) else (f"{v:,}" if isinstance(v, int) else str(v))
+            need = max(need, text_width(shown) + 2)
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i + 1)].width = max(min_w, min(max_w, need))
+
+
+def write_ops_sheet(wb, rows):
+    """rows：{"YYYY-MM": [与 OPS_COLS 对应的值]}。整张表按固定格式重写，不改数字。"""
+    pos = wb.sheetnames.index(OPS_SHEET) if OPS_SHEET in wb.sheetnames else None
+    if pos is not None:
         del wb[OPS_SHEET]
-    rows[row[0]] = row
-    ws = wb.create_sheet(OPS_SHEET)
+    ws = wb.create_sheet(OPS_SHEET, pos)
     ws.sheet_view.showGridLines = False
     ws.append(OPS_COLS)
     style_header(ws[1])
-    for k in sorted(rows):
-        ws.append(rows[k])
-        for c in ws[ws.max_row]:
+    for c in ws[1]:
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    ws.row_dimensions[1].height = 26
+    data = [rows[k] for k in sorted(rows)]
+    for vals in data:
+        ws.append(vals)
+        for col, c in zip(OPS_COLS, ws[ws.max_row]):
             c.font = Font(name=FONT, size=10)
             c.border = Border(bottom=THIN)
-            if isinstance(c.value, float):
+            c.alignment = Alignment(vertical="center")
+            if col in OPS_COUNT_COLS:
+                c.number_format = "#,##0"
+            elif col in OPS_MONEY_COLS:
                 c.number_format = "#,##0.00"
-    for i, w in enumerate([10, 9, 9, 9, 9, 12, 12, 12, 9, 12, 13, 12, 9, 48]):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(i + 1)].width = w
+        ws.row_dimensions[ws.max_row].height = 20
+    fit_widths(ws, OPS_COLS, data)
     ws.freeze_panes = "B2"
     add_note(ws, "口径：订单数/订单实收来自营业报表（订单额 − 退款），已剔除 rules.yaml 里确认的异常订单；"
                  "余额消费 = 余额支付 + 商家扣除（剔除成对异常）；储值充值为实付金额（不含赠送，剔除成对异常）；"
                  "期末储值余额取余额流水月末值；主表销售额来自销售汇总。", len(OPS_COLS))
 
 
+def read_ops_rows(wb):
+    """只读第一列是 YYYY-MM 的数据行（跳过表头和口径说明）。"""
+    if OPS_SHEET not in wb.sheetnames:
+        return {}
+    return {str(r[0]): list(r[:len(OPS_COLS)]) for r in wb[OPS_SHEET].iter_rows(min_row=2, values_only=True)
+            if r and r[0] is not None and MONTH_KEY_RE.match(str(r[0]))}
+
+
+def upsert_ops(wb, row):
+    rows = read_ops_rows(wb)
+    rows[row[0]] = row
+    write_ops_sheet(wb, rows)
+
+
 def read_ops(wb):
     if OPS_SHEET not in wb.sheetnames:
         return {}
     out = {}
-    for r in wb[OPS_SHEET].iter_rows(min_row=2, values_only=True):
-        if r and r[0] and re.match(r"^\d{4}-\d{2}$", str(r[0])):
-            out[str(r[0])] = dict(zip(OPS_COLS, r))
+    for k, r in read_ops_rows(wb).items():
+        out[k] = dict(zip(OPS_COLS, r))
     return out
 
 
@@ -484,7 +524,7 @@ def write_year_summary(wb, year, cat_order):
     for i in range(len(months)):
         ws.column_dimensions[openpyxl.utils.get_column_letter(2 + i)].width = 11
     ws.column_dimensions[openpyxl.utils.get_column_letter(2 + len(months))].width = 13
-    ws.column_dimensions[openpyxl.utils.get_column_letter(3 + len(months))].width = 10
+    ws.column_dimensions[openpyxl.utils.get_column_letter(3 + len(months))].width = 12
     ws.freeze_panes = "B3"
 
 
@@ -542,16 +582,36 @@ def ops_section(ws, year, months, ops, ncol):
     ws.cell(ws.max_row, 1).font = Font(name=FONT, italic=True, size=9, color=C_MUTED)
 
 
+def restyle_existing_headers(wb):
+    """已生成的月表 / 异常表：只调列宽，避免表头被挤成两行（不动数据）。"""
+    for ws in wb.worksheets:
+        mt = SHEET_RE.match(ws.title)
+        if not mt:
+            continue
+        if mt.group(3) == "-异常与调整":
+            ws.column_dimensions["F"].width = max(ws.column_dimensions["F"].width or 0, 12)
+            ws.column_dimensions["G"].width = max(ws.column_dimensions["G"].width or 0, 14)
+        else:
+            ws.column_dimensions["E"].width = max(ws.column_dimensions["E"].width or 0, 12)
+            ws.column_dimensions["G"].width = max(ws.column_dimensions["G"].width or 0, 19)
+
+
 def rebuild_summary_only(path, rules):
     wb = openpyxl.load_workbook(path)
     year = int(re.match(r"^(\d{4})年", pathlib.Path(path).name).group(1))
     bak_dir = pathlib.Path(path).parent / "_backup"
     bak_dir.mkdir(exist_ok=True)
     shutil.copy2(path, bak_dir / f"{pathlib.Path(path).stem}_{dt.datetime.now():%Y%m%d_%H%M%S}.xlsx")
+    ops_rows = read_ops_rows(wb)
+    if ops_rows:  # 按新格式重写，数字原样写回
+        write_ops_sheet(wb, ops_rows)
+    restyle_existing_headers(wb)
     write_year_summary(wb, year, rules.get("category_order") or [])
+    if OPS_SHEET in wb.sheetnames:
+        wb.move_sheet(OPS_SHEET, offset=1 - wb.sheetnames.index(OPS_SHEET))
     wb.active = 0
     wb.save(path)
-    print(f"已重建 {path} 的「{SUMMARY_SHEET}」")
+    print(f"已重建 {path} 的「{SUMMARY_SHEET}」" + (f"和「{OPS_SHEET}」" if ops_rows else ""))
 
 
 def main():
