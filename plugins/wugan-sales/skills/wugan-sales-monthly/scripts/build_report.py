@@ -12,8 +12,9 @@ import shutil
 import sys
 
 import openpyxl
+import openpyxl.utils
 import yaml
-from openpyxl.formatting.rule import DataBarRule
+from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 HEADER = ["分类", "商品名称", "规格", "单价", "实际销量", "实际销售额\n(不含退款、优惠)", "实际销售额占比"]  # F 列手动换行，避免断在「优惠」中间
@@ -261,9 +262,124 @@ def write_issues(ws, issues, recon):
     ws.freeze_panes = "A2"
 
 
+SUMMARY_SHEET = "年度汇总"
+
+
+def read_month_sheet(ws):
+    """从月度主表读出 {分类: (销量, 销售额)} 和 总计 (销量, 销售额)。"""
+    cats, total = collections.OrderedDict(), (0, 0.0)
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        name = r[0]
+        if not name or str(name).startswith("口径") or str(name).startswith("补差价"):
+            continue
+        if name == "总计":
+            total = (r[4] or 0, r[5] or 0.0)
+        else:
+            cats[name] = (r[4] or 0, r[5] or 0.0)
+    return cats, total
+
+
+def write_year_summary(wb, year, cat_order):
+    """第一页：分类 × 月份 的销售额 / 销量矩阵。只读各月主表，可随时重建。"""
+    months = sorted(sheet_month(t)[1] for t in wb.sheetnames
+                    if sheet_month(t) and sheet_month(t)[0] == year and not SHEET_RE.match(t).group(3))
+    if not months:
+        return
+    data, totals, one_yuan = {}, {}, {}
+    for mo in months:
+        title = f"{year}年{mo}月"
+        data[mo], totals[mo] = read_month_sheet(wb[title])
+        oy = f"{title}-1元计价"
+        one_yuan[mo] = read_month_sheet(wb[oy])[1] if oy in wb.sheetnames else (0, 0.0)
+    seen = {c for mo in months for c in data[mo]}
+    cats = [c for c in cat_order if c in seen] + sorted(seen - set(cat_order))
+
+    if SUMMARY_SHEET in wb.sheetnames:
+        del wb[SUMMARY_SHEET]
+    ws = wb.create_sheet(SUMMARY_SHEET, 0)
+    ws.sheet_view.showGridLines = False
+    ncol = 1 + len(months) + 2
+    ws.append([f"{year}年 五感销售年度汇总"])
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncol)
+    ws["A1"].font = Font(name=FONT, bold=True, size=14, color=C_HEAD)
+    ws.row_dimensions[1].height = 28
+    ws.append([f"数据来自各月主表（支付时间口径，单位：元/件）；主表不含 1 元计价商品；更新于 {dt.datetime.now():%Y-%m-%d %H:%M}"])
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncol)
+    ws["A2"].font = Font(name=FONT, italic=True, size=9, color=C_MUTED)
+
+    def section(title, idx, fmt, with_share):
+        ws.append([])
+        ws.append([title])
+        ws.cell(ws.max_row, 1).font = Font(name=FONT, bold=True, size=12, color=C_HEAD)
+        ws.append(["分类"] + [f"{mo}月" for mo in months] + ["全年合计", "全年占比" if with_share else ""])
+        style_header(ws[ws.max_row][:ncol - (0 if with_share else 1)])
+        ws.row_dimensions[ws.max_row].height = 26
+        grand = sum(totals[mo][idx] for mo in months)
+        first = ws.max_row + 1
+
+        def put(label, vals, kind):
+            yr = sum(vals)
+            share = (yr / grand if grand else 0) if with_share and kind == "cat" else None
+            ws.append([label] + vals + [yr, share])
+            row = ws[ws.max_row]
+            bold = kind in ("total", "raw")
+            fill = PatternFill("solid", fgColor=C_TOTAL) if kind == "total" else None
+            for c in row[:ncol]:
+                c.font = Font(name=FONT, bold=bold, size=10, color=C_MUTED if kind == "aux" else None)
+                c.border = Border(bottom=THIN, top=Side(style="medium", color=C_HEAD) if kind == "total" else None)
+                c.alignment = Alignment(vertical="center")
+                if fill:
+                    c.fill = fill
+            for c in row[1:ncol - 1]:
+                c.number_format = fmt
+            row[ncol - 2].font = Font(name=FONT, bold=True, size=10)
+            row[ncol - 1].number_format = "0.0%"
+            ws.row_dimensions[ws.max_row].height = 20
+
+        for c in cats:
+            put(c, [data[mo].get(c, (0, 0.0))[idx] for mo in months], "cat")
+        last_cat = ws.max_row
+        put("主表合计", [totals[mo][idx] for mo in months], "total")
+        if idx == 1:
+            put("1元计价（补差价等）", [one_yuan[mo][idx] for mo in months], "aux")
+            put("后台合计", [totals[mo][idx] + one_yuan[mo][idx] for mo in months], "raw")
+            mom = [None] + [(totals[mo][1] / totals[months[i]][1] - 1) if totals[months[i]][1] else None
+                            for i, mo in enumerate(months[1:])]
+            ws.append(["主表合计环比"] + mom)
+            for c in ws[ws.max_row][:ncol]:
+                c.font = Font(name=FONT, size=9, color=C_MUTED)
+                c.number_format = "+0.0%;-0.0%;0.0%"
+        if last_cat >= first:  # 分类 × 月 色阶，一眼看出淡旺季和主力分类
+            ws.conditional_formatting.add(
+                f"B{first}:{openpyxl.utils.get_column_letter(1 + len(months))}{last_cat}",
+                ColorScaleRule(start_type="min", start_color="FFFFFF", end_type="max", end_color=C_BAR))
+
+    section("实际销售额（元）", 1, "#,##0", True)
+    section("实际销量（件）", 0, "#,##0", False)
+    ws.column_dimensions["A"].width = 22
+    for i in range(len(months)):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(2 + i)].width = 11
+    ws.column_dimensions[openpyxl.utils.get_column_letter(2 + len(months))].width = 13
+    ws.column_dimensions[openpyxl.utils.get_column_letter(3 + len(months))].width = 10
+    ws.freeze_panes = "B3"
+
+
+def rebuild_summary_only(path, rules):
+    wb = openpyxl.load_workbook(path)
+    year = int(re.match(r"^(\d{4})年", pathlib.Path(path).name).group(1))
+    bak_dir = pathlib.Path(path).parent / "_backup"
+    bak_dir.mkdir(exist_ok=True)
+    shutil.copy2(path, bak_dir / f"{pathlib.Path(path).stem}_{dt.datetime.now():%Y%m%d_%H%M%S}.xlsx")
+    write_year_summary(wb, year, rules.get("category_order") or [])
+    wb.active = 0
+    wb.save(path)
+    print(f"已重建 {path} 的「{SUMMARY_SHEET}」")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--raw", required=True)
+    ap.add_argument("--summary-only", metavar="YEAR_XLSX", help="只重建该年度文件的「年度汇总」，不需要 --raw")
+    ap.add_argument("--raw")
     ap.add_argument("--rules", default=str(pathlib.Path(__file__).resolve().parent.parent / "rules.yaml"))
     ap.add_argument("--dir", default=str(pathlib.Path.home() / "Desktop"), help="年度文件所在目录")
     ap.add_argument("--workbook", help="默认 <dir>/YYYY年五感销售数据统计.xlsx（一年一个文件，不存在就新建）")
@@ -272,8 +388,12 @@ def main():
     ap.add_argument("--replace", action="store_true", help="同名 sheet 已存在时覆盖（仍会先备份）")
     a = ap.parse_args()
 
-    raw = load_raw(a.raw)
     rules = yaml.safe_load(pathlib.Path(a.rules).read_text(encoding="utf-8"))
+    if a.summary_only:
+        return rebuild_summary_only(a.summary_only, rules)
+    if not a.raw:
+        ap.error("需要 --raw（或用 --summary-only）")
+    raw = load_raw(a.raw)
     y, m = raw["month"].split("-")
     sheet = a.sheet or f"{y}年{int(m)}月"
 
@@ -383,7 +503,8 @@ def main():
         recon.append(("后台页面顶部实际销售额", f"{float(hdr_real):,.2f} 元" + (f"（与明细差 {hdr_diff}，以明细为准）" if hdr_diff else "  ✓ 一致")))
     write_issues(wb.create_sheet(f"{sheet}-异常与调整"), issues, recon)
     sort_month_sheets(wb)
-    wb.active = wb.sheetnames.index(sheet)
+    write_year_summary(wb, int(y), cat_order)
+    wb.active = 0
     wb.save(src)
     print(f"已写入 {src} → sheet「{sheet}」；" + (f"备份 {bak}" if bak else "新建文件"))
 
