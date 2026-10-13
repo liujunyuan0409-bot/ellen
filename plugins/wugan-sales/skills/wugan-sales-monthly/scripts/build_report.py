@@ -1,6 +1,6 @@
 """五感月度销售表：raw json（fetch_month.js 输出）+ rules.yaml → 追加到工作簿的当月 sheet。
 
-退出码：0 成功；2 有未登记的规格选项（需改 rules.yaml）；3 对数不平；4 sheet 已存在。
+退出码：0 成功；2 有未登记的规格选项（需改 rules.yaml）；3 对数不平；4 sheet 已存在；5 有未确认的大额消费。
 """
 import argparse
 import collections
@@ -324,9 +324,12 @@ def apply_anomalies(raw, rules):
     for pr in pairs:  # 成对剔除的充值按充值发生的月份扣
         for t in pr["topups"]:
             if t["time"].startswith(month):
-                ex["topup_amt"] += _f(t["amount"])
-                ex["topup_n"] += 1
-                issue_rows.append(["剔除异常充值(成对)", "", "余额充值", t["time"], pr.get("note", ""), "", -_f(t["amount"])])
+                paid = _f(t.get("paid", t["amount"]))  # 营业报表「储值充值」是实付口径，不含赠送
+                ex["topup_amt"] += paid
+                ex["topup_n"] += 1 if paid else 0
+                issue_rows.append(["剔除异常充值(成对)", "", "余额充值", t["time"],
+                                   pr.get("note", "") + (f"（到账 {_f(t['amount']):,.0f}，实付 {paid:,.0f}）" if paid != _f(t["amount"]) else ""),
+                                   "", -paid])
     return items, ex, pending, issue_rows
 
 
@@ -345,7 +348,7 @@ def ops_row(raw, ex, main_qty, main_amt):
     return [raw["month"], len(days), t["order_count"] - ex["order_n"], t["new_user_order_count"], t["patrons_user_order_count"],
             round(t["order_total"] - t["order_refund_total"] - ex["order_amt"], 2), round(paid_balance, 2),
             round(t["topup_total"] - ex["topup_amt"], 2), t["topup_count"] - ex["topup_n"],
-            round(paid_balance + t["cashier_total"] - ex["ded_amt"], 2),
+            round(paid_balance + (t["cashier_total_balance"] if "cashier_total_balance" in t else t["cashier_total"]) - ex["ded_amt"], 2),
             _f(summ.get("amount_after")) if summ else None, round(main_amt, 2), main_qty, "；".join(ex["notes"])]
 
 

@@ -6,7 +6,7 @@ description: Use when the user asks for 五感咖啡 / 五感 monthly sales stat
 # 五感月度销售表
 
 ## Overview
-从戴维盈动商家后台「运营数据 → 销售汇总」按月取商品级明细，按 `rules.yaml` 清洗成 **分类 → 商品 → 规格** 三层表，写进**当年的年度文件** `~/Desktop/YYYY年五感销售数据统计.xlsx`（一年一个文件，不存在就新建）。
+从戴维盈动商家后台按月取四份数据——「销售汇总」商品级明细、「营业报表」逐日经营数据、「余额统计」余额流水、当月 ≥1 万的已支付订单——按 `rules.yaml` 清洗成 **分类 → 商品 → 规格** 三层表，写进**当年的年度文件** `~/Desktop/YYYY年五感销售数据统计.xlsx`（一年一个文件，不存在就新建）。
 `~/Desktop/五感销售数据统计.xlsx` 是 2025 年手工版（8–12 月），只读不写，但新品识别会参考它。
 **口径只认 `rules.yaml`**；脚本对不平、遇到没登记的规格选项会直接停下，不要绕过。
 
@@ -23,7 +23,7 @@ description: Use when the user asks for 五感咖啡 / 五感 monthly sales stat
 ## 流程
 1. **确定月份**：默认上一个完整自然月；sheet 名 `YYYY年M月`。
 2. **登录**：Playwright `browser_navigate` 到 `https://zhyx.eingdong.com/console/#/login`。如果没有跳到 `#/index`，**停下请用户在浏览器里登录**（不要索要或保存账号密码）。
-3. **取数**：读 `scripts/fetch_month.js`，把 `__MONTH__` 替换成 `YYYY-MM`，整段作为 `browser_evaluate` 的 function，`filename` 存到 `.playwright-mcp/wugan_raw_YYYY-MM.json`（Playwright 只能写到它允许的目录）。结果里有 `error` 就按提示处理（`NOT_LOGGED_IN` → 回第 2 步）。
+3. **取数**：读 `scripts/fetch_month.js`，把 `__MONTH__` 替换成 `YYYY-MM`，整段作为 `browser_evaluate` 的 function，`filename` 存到 `.playwright-mcp/wugan_raw_YYYY-MM.json`（Playwright 只能写到它允许的目录）。结果里有 `error` 就按提示处理（`NOT_LOGGED_IN` → 回第 2 步）。返回内容只含统计字段，不含顾客昵称、手机号、用户 ID。
 4. **试跑**：
    ```bash
    python -I scripts/build_report.py --raw <raw.json> --dry-run   # 文件按 raw 的年份自动定位；--dir 改目录
@@ -43,6 +43,7 @@ description: Use when the user asks for 五感咖啡 / 五感 monthly sales stat
 - `spec_rename` / `product_rename` / `reclassify`：人工统一名称和分类，每次命中都会记到「异常与调整」
 - `one_yuan_price_max`：0 < 标价 ≤ 阈值的商品（补差价、1 元「手冲咖啡」）不进主表，**主表占比分母不含这部分**
 - `category_order`：主表分类排序
+- `anomaly`：大额消费的确认结果。`excluded_orders` 剔除的订单；`excluded_balance_pairs` 成对剔除的「充值 → 商家扣回」，充值写到账 `amount` 和实付 `paid`（营业报表「储值充值」是实付口径，剔除时扣 `paid`）；`kept` 确认为真实消费的大额
 
 ## 常见坑
 - **大额充值是正常的，大额消费要核实**：2025-10 有两笔店员后台下的补差价（37,131、38,285 元），另外有三组「充值后被商家等额扣回」（2025-09 退还 36,000、2026-03「消费」29,104、2026-08「结算」20,000），都已经由用户确认剔除。营业报表把商家扣除记成「收银」，不剔除的话消费和储值都会虚高。
@@ -51,5 +52,7 @@ description: Use when the user asks for 五感咖啡 / 五感 monthly sales stat
 - **标价 0 的是赠品**，留在主表；成交 0 元的行（100% 优惠）会列在「异常与调整」里。
 - **后台页面顶部的「实际销售额」可能和明细加总差几十元**（退款归属不同），表格以明细为准，差额写在「异常与调整」。
 - 不要用透视表的「求和」算单价（2025-11 手工表就是这样错的），也不要换成销售额/销量。
-- 接口 `page_size=2000`，超过时脚本返回 `PAGINATED`，需要先给 fetch 加分页。
+- 接口 `page_size=2000`，超过时脚本返回 `PAGINATED`，需要先给 fetch 加分页。订单列表接口单次最多查 3 个月、每页最多 100 条。
+- **成对剔除充值要扣实付，不是到账**：2026-03-08 那 4 笔每笔到账 7,276，其中赠送 388、实付 6,888；按到账扣会把 3 月储值充值少算 1,552。新增成对记录时，用当天营业报表的 `topup_total` / `topup_gift` 反推 `paid`。
+- 订单实收（营业报表：订单额 − 退款）和商品销售额（销售汇总）个别月份差几十到一百多元（2026-01 差 148、2026-06 差 99），其余月份完全一致；推断是退款跨月归属不同，两者以各自口径展示即可。
 - 这个仓库是公开的：raw json 和工作簿**不要提交**，token 只在浏览器里用。

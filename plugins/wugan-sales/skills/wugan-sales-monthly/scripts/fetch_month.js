@@ -41,7 +41,7 @@ async () => {
   // 2) 营业报表（一天一行）
   const REPORT_FIELDS = ['date', 'order_count', 'order_total', 'order_refund_total', 'order_total_balance', 'order_refund_balance',
     'order_total_wechat', 'order_total_alipay', 'order_total_offline', 'new_user_order_count', 'patrons_user_order_count',
-    'visit_total', 'visit_new', 'topup_count', 'topup_total', 'topup_gift', 'cashier_count', 'cashier_total',
+    'visit_total', 'visit_new', 'topup_count', 'topup_total', 'topup_gift', 'cashier_count', 'cashier_total', 'cashier_total_balance',
     'order_count_ts', 'order_count_zq', 'order_total_coupon'];
   const rp = await post('/service/index.php/report', new URLSearchParams({ 'date[0]': day0, 'date[1]': day1, store_id: storeid, date_type: 0, storeid, token }));
   if (String(rp.status) !== '1') return { error: 'API_STATUS', api: 'report', status: rp.status, msg: rp.msg };
