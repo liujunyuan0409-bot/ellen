@@ -15,7 +15,7 @@ import yaml
 from openpyxl.formatting.rule import DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-HEADER = ["分类", "商品名称", "规格", "单价", "实际销量", "实际销售额(不含退款、优惠)", "实际销售额占比"]
+HEADER = ["分类", "商品名称", "规格", "单价", "实际销量", "实际销售额\n(不含退款、优惠)", "实际销售额占比"]  # F 列手动换行，避免断在「优惠」中间
 BLANK_SPEC = "(空白)"
 
 
