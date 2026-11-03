@@ -41,4 +41,15 @@ skills/wugan-sales-monthly/
      └─ build_report.py       清洗 + 对数 + 写 Excel
 ```
 
-依赖：Playwright MCP；Python `openpyxl`、`pyyaml`。登录由使用者在浏览器里手动完成，skill 不保存账号密码或 token。
+依赖：支持页面脚本执行的 Playwright MCP；Python `openpyxl`、`pyyaml`。登录由使用者在浏览器里手动完成，skill 不保存账号密码或 token。只读 DOM 浏览器工具不能代替接口取数。
+
+当前版本 **0.2.0**，变更见 [CHANGELOG.md](CHANGELOG.md)。默认年度文件目录为 `~/Desktop/Ellen/五感专题分析`，可在技能的 `config.json` 配置或用 `--dir` / `--workbook` 覆盖。目录/文件缺失会停止，新建年度文件须确认后加 `--create`。
+
+运行前先用 Playwright 执行 `scripts/browser_probe.js` 并保存结果，再运行 `scripts/preflight.py --month YYYY-MM --browser-check <probe.json>`（路径相对技能目录）。完整操作和异常确认流程见 `skills/wugan-sales-monthly/SKILL.md`。
+
+报表会校验整月数据、分页完整性和余额对数，先写临时文件回读验证，再备份并原子替换。每次发布在 `_backup/` 保存版本与文件哈希的审计记录。开发验证：
+
+```bash
+python -I skills/wugan-sales-monthly/scripts/test_reliability.py
+node skills/wugan-sales-monthly/scripts/test_fetch.mjs
+```

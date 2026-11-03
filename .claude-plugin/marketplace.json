@@ -17,7 +17,7 @@
     {
       "name": "wugan-sales",
       "description": "五感咖啡月度销售表：商家后台取数 → 规则清洗 → 对数校验 → 追加 Excel。",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "经营数据",
       "source": "./plugins/wugan-sales",
       "author": { "name": "Ellen Liu", "email": "ellen.liu@klook.com" }

@@ -10,6 +10,9 @@ import re
 import pathlib
 import shutil
 import sys
+import math
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from reliability import VERSION, atomic_save, digest, resolve_target, validate_raw, validate_funds
 
 import openpyxl
 import openpyxl.utils
@@ -345,10 +348,17 @@ def ops_row(raw, ex, main_qty, main_amt):
                 t[k] += _f(v)
     paid_balance = t["order_total_balance"] - t["order_refund_balance"]
     summ = raw.get("ledger_summary") or {}
+    # 充值退款不一定计入营业报表的收银字段；优先按余额流水扣减总额对数，避免重复扣减。
+    if summ.get("deductions_amount") is not None:
+        ledger_refunds = sum(_f(r["amount"]) for r in raw.get("ledger") or []
+                             if r.get("remark") == "订单退款")
+        balance_consumption = _f(summ["deductions_amount"]) - ledger_refunds - ex["ded_amt"]
+    else:
+        balance_consumption = paid_balance + t["cashier_total_balance"] - ex["ded_amt"]
     return [raw["month"], len(days), t["order_count"] - ex["order_n"], t["new_user_order_count"], t["patrons_user_order_count"],
             round(t["order_total"] - t["order_refund_total"] - ex["order_amt"], 2), round(paid_balance, 2),
             round(t["topup_total"] - ex["topup_amt"], 2), t["topup_count"] - ex["topup_n"],
-            round(paid_balance + (t["cashier_total_balance"] if "cashier_total_balance" in t else t["cashier_total"]) - ex["ded_amt"], 2),
+            round(balance_consumption, 2),
             _f(summ.get("amount_after")) if summ else None, round(main_amt, 2), main_qty, "；".join(ex["notes"])]
 
 
@@ -599,12 +609,10 @@ def restyle_existing_headers(wb):
             ws.column_dimensions["G"].width = max(ws.column_dimensions["G"].width or 0, 19)
 
 
-def rebuild_summary_only(path, rules):
+def rebuild_summary_only(path, rules, rules_path):
+    original_hash = digest(path)
     wb = openpyxl.load_workbook(path)
     year = int(re.match(r"^(\d{4})年", pathlib.Path(path).name).group(1))
-    bak_dir = pathlib.Path(path).parent / "_backup"
-    bak_dir.mkdir(exist_ok=True)
-    shutil.copy2(path, bak_dir / f"{pathlib.Path(path).stem}_{dt.datetime.now():%Y%m%d_%H%M%S}.xlsx")
     ops_rows = read_ops_rows(wb)
     if ops_rows:  # 按新格式重写，数字原样写回
         write_ops_sheet(wb, ops_rows)
@@ -613,7 +621,7 @@ def rebuild_summary_only(path, rules):
     if OPS_SHEET in wb.sheetnames:
         wb.move_sheet(OPS_SHEET, offset=1 - wb.sheetnames.index(OPS_SHEET))
     wb.active = 0
-    wb.save(path)
+    atomic_save(wb, path, {"operation": "summary-only", "rules_sha256": digest(rules_path)}, original_hash)
     print(f"已重建 {path} 的「{SUMMARY_SHEET}」" + (f"和「{OPS_SHEET}」" if ops_rows else ""))
 
 
@@ -622,19 +630,23 @@ def main():
     ap.add_argument("--summary-only", metavar="YEAR_XLSX", help="只重建该年度文件的「年度汇总」，不需要 --raw")
     ap.add_argument("--raw")
     ap.add_argument("--rules", default=str(pathlib.Path(__file__).resolve().parent.parent / "rules.yaml"))
-    ap.add_argument("--dir", default=str(pathlib.Path.home() / "Desktop" / "五感专题分析"), help="年度文件所在目录（默认 ~/Desktop/五感专题分析）")
+    ap.add_argument("--dir", help="年度文件目录；默认读取 skill config.json")
     ap.add_argument("--workbook", help="默认 <dir>/YYYY年五感销售数据统计.xlsx（一年一个文件，不存在就新建）")
     ap.add_argument("--sheet", help="默认 YYYY年M月")
     ap.add_argument("--dry-run", action="store_true", help="只校验+打印摘要，不写文件")
     ap.add_argument("--replace", action="store_true", help="同名 sheet 已存在时覆盖（仍会先备份）")
+    ap.add_argument("--create", action="store_true", help="用户确认后允许在已有目录中新建年度文件")
     a = ap.parse_args()
 
     rules = yaml.safe_load(pathlib.Path(a.rules).read_text(encoding="utf-8"))
     if a.summary_only:
-        return rebuild_summary_only(a.summary_only, rules)
+        return rebuild_summary_only(a.summary_only, rules, a.rules)
     if not a.raw:
         ap.error("需要 --raw（或用 --summary-only）")
     raw = load_raw(a.raw)
+    validate_raw(raw)
+    funds = validate_funds(raw, rules)
+    print("资金核对通过：期初 + 增加 − 扣减 = 期末；流水消费/退款与营业报表一致")
     y, m = raw["month"].split("-")
     sheet = a.sheet or f"{y}年{int(m)}月"
 
@@ -673,7 +685,8 @@ def main():
     main_lines = flatten(aggregate(main_rows, cat_order))
     one_lines = flatten(aggregate(one_rows, cat_order)) if one_rows else []
 
-    src = pathlib.Path(a.workbook) if a.workbook else pathlib.Path(a.dir) / FILE_PATTERN.format(year=y)
+    src = resolve_target(raw["month"], a.dir, a.workbook, a.create)
+    original_hash = digest(src) if src.exists() else None
     is_new = not src.exists()
     if is_new:
         wb = openpyxl.Workbook()
@@ -734,13 +747,6 @@ def main():
         print(f"SHEET_EXISTS {sheet} 已存在，确认要覆盖再加 --replace")
         sys.exit(4)
 
-    bak = None
-    if not is_new:
-        bak_dir = src.parent / "_backup"
-        bak_dir.mkdir(exist_ok=True)
-        bak = bak_dir / f"{src.stem}_{dt.datetime.now():%Y%m%d_%H%M%S}{src.suffix}"
-        shutil.copy2(src, bak)
-
     for name in (sheet, f"{sheet}-1元计价", f"{sheet}-异常与调整"):
         if name in wb.sheetnames:
             del wb[name]
@@ -765,9 +771,34 @@ def main():
     if OPS_SHEET in wb.sheetnames:  # 顺序：年度汇总 → 月度经营数据 → 各月
         wb.move_sheet(OPS_SHEET, offset=1 - wb.sheetnames.index(OPS_SHEET))
     wb.active = 0
-    wb.save(src)
+    def verify_saved(saved):
+        for name in (sheet, f"{sheet}-异常与调整", SUMMARY_SHEET, OPS_SHEET):
+            if name not in saved.sheetnames:
+                raise ValueError(f"OUTPUT_SHEET_MISSING: {name}")
+        if one_lines and f"{sheet}-1元计价" not in saved.sheetnames:
+            raise ValueError("OUTPUT_ONE_YUAN_MISSING")
+        saved_ops = [r for r in saved[OPS_SHEET].values if r[0] == raw["month"]]
+        if len(saved_ops) != 1 or list(saved_ops[0]) != ops:
+            raise ValueError("OUTPUT_OPS_MISMATCH")
+        for title, expected in ((sheet, main_lines), (f"{sheet}-1元计价", one_lines)):
+            if expected:
+                actual = list(saved[title].values)[1:1+len(expected)]
+                want = [tuple(vals) for _, vals in expected]
+                def equal(a, b):
+                    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                        return math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-9)
+                    return a == b
+                if len(actual) != len(want) or any(not all(equal(a,b) for a,b in zip(ar,br)) for ar,br in zip(actual,want)):
+                    raise ValueError(f"OUTPUT_DETAIL_MISMATCH: {title}")
+    provenance = {"operation": "monthly", "month": raw["month"], "rules_sha256": digest(a.rules),
+                  "raw_sha256": digest(a.raw), "fetched_at": raw["fetched_at"], "funds": funds}
+    bak, audit = atomic_save(wb, src, provenance, original_hash, verify_saved)
     print(f"已写入 {src} → sheet「{sheet}」；" + (f"备份 {bak}" if bak else "新建文件"))
+    print(f"版本 {VERSION}；追溯记录 {audit}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (ValueError, KeyError, TypeError) as exc:
+        sys.exit(f"VALIDATION_FAIL: {exc}")

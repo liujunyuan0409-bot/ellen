@@ -16,16 +16,45 @@ async () => {
   const token = cookie('Admin-Token');
   const storeid = cookie('StoreId');
   if (!token || !storeid) return { error: 'NOT_LOGGED_IN', hint: '请先在浏览器里登录商家后台' };
-  if (!/^\d{4}-\d{2}$/.test(MONTH)) return { error: 'BAD_MONTH', month: MONTH };
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(MONTH)) return { error: 'BAD_MONTH', month: MONTH };
 
   const [y, m] = MONTH.split('-').map(Number);
   const lastDay = new Date(y, m, 0).getDate();
   const day0 = `${MONTH}-01`, day1 = `${MONTH}-${String(lastDay).padStart(2, '0')}`;
   const start = `${day0} 00:00:00`, end = `${day1} 23:59:59`;
   const post = async (path, params) => {
-    const r = await fetch(path, { method: 'POST', body: params, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-    return r.json();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const r = await fetch(path, { method: 'POST', body: params, signal: controller.signal, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      if (!r.ok) throw new Error(`HTTP_STATUS: ${path} ${r.status}`);
+      const result = await r.json();
+      if (String(result.status) !== '1') throw new Error(`API_STATUS: ${path} ${result.status}`);
+      if (!Array.isArray(result.list)) throw new Error(`API_SCHEMA: ${path} list missing`);
+      return result;
+    } finally { clearTimeout(timer); }
   };
+  // Stop on missing totals, ignored pagination, changed counts, or bounded-page exhaustion.
+  const paged = async (path, params, sizeKey, size, requireTotal = true) => {
+    let first, total, rows = [], pages = 0;
+    const fingerprints = new Set();
+    for (let page = 1; page <= 100; page++) {
+      const p = new URLSearchParams(params); p.set('page', page); p.set(sizeKey, size);
+      const d = await post(path, p); pages++;
+      if (!first) { first = d; total = d.total_count == null ? null : Number(d.total_count); }
+      if (requireTotal && (!Number.isInteger(total) || total < 0)) throw new Error(`API_TOTAL_MISSING: ${path}`);
+      if (total !== null && Number(d.total_count) !== total) throw new Error(`API_TOTAL_CHANGED: ${path}`);
+      const fingerprint = JSON.stringify(d.list);
+      if (d.list.length && fingerprints.has(fingerprint)) throw new Error(`PAGINATION_IGNORED: ${path}`);
+      fingerprints.add(fingerprint); rows.push(...d.list);
+      if (total !== null && rows.length > total) throw new Error(`API_TOTAL_MISMATCH: ${path}`);
+      if (total !== null ? rows.length === total : d.list.length < size) return {first, rows, pages};
+      if (!d.list.length) throw new Error(`INCOMPLETE_PAGES: ${path}`);
+    }
+    throw new Error(`PAGE_LIMIT: ${path}`);
+  };
+
+  try {
 
   // 1) 销售汇总
   const p = new URLSearchParams();
@@ -34,9 +63,8 @@ async () => {
   p.append('time_slot[0]', '00:00'); p.append('time_slot[1]', '23:59');
   for (const [k, v] of Object.entries({ search_type: 1, tc_type: 0, split_tc: 0, goods_title: '', time_type: 2,
                                          token, order_type: 0, third_order_type: 0, storeid })) p.append(k, v);
-  const d = await post('/service/index.php/data/classify_item_data', p);
-  if (String(d.status) !== '1') return { error: 'API_STATUS', api: 'classify_item_data', status: d.status, msg: d.msg || d.message };
-  if (Number(d.total_count) > Number(d.page_size)) return { error: 'PAGINATED', total_count: d.total_count, page_size: d.page_size };
+  const sales = await paged('/service/index.php/data/classify_item_data', p, 'page_size', 2000);
+  const d = sales.first;
 
   // 2) 营业报表（一天一行）
   const REPORT_FIELDS = ['date', 'order_count', 'order_total', 'order_refund_total', 'order_total_balance', 'order_refund_balance',
@@ -46,38 +74,34 @@ async () => {
   const rp = await post('/service/index.php/report', new URLSearchParams({ 'date[0]': day0, 'date[1]': day1, store_id: storeid, date_type: 0, storeid, token }));
   if (String(rp.status) !== '1') return { error: 'API_STATUS', api: 'report', status: rp.status, msg: rp.msg };
   const report_days = (rp.list || []).map(x => Object.fromEntries(REPORT_FIELDS.map(k => [k, x[k]])));
+  const dates = new Set(report_days.map(x => x.date));
+  if (report_days.length !== lastDay || dates.size !== lastDay || Array.from({length:lastDay}, (_,i)=>`${MONTH}-${String(i+1).padStart(2,'0')}`).some(x=>!dates.has(x))) throw new Error('INCOMPLETE_REPORT_DAYS');
 
   // 3) 余额流水
-  const lg = await post('/service/index.php/recharge_statistics/index', new URLSearchParams({
-    date: JSON.stringify([start, end]), type: -1, search: '', page: 1, page_size: 5000, user_id: '', index_mode: 0, token, storeid }));
-  const ledgerRows = lg.list || [];
-  if (Number(lg.total_count || ledgerRows.length) > ledgerRows.length) return { error: 'PAGINATED', api: 'ledger', total_count: lg.total_count };
+  const ledgerResult = await paged('/service/index.php/recharge_statistics/index', new URLSearchParams({
+    date: JSON.stringify([start, end]), type: -1, search: '', user_id: '', index_mode: 0, token, storeid }), 'page_size', 5000);
+  const lg = ledgerResult.first, ledgerRows = ledgerResult.rows;
   const ledger = ledgerRows.map(x => ({ time: x.add_time, amount: x.amount, after: x.amount_after, remark: x.remark }));
 
   // 4) 大额订单（接口限 3 个月、每页 ≤100）
   const big_orders = [];
-  for (let page = 1; page <= 10; page++) {
-    const o = await post('/service/index.php/po_v/get_order_list', new URLSearchParams({
-      safe: 1, optionsSearchVal: 0, table_name: '', page, pagesize: 100, presale: 0, children: '', parent_id: '',
+  const orders = await paged('/service/index.php/po_v/get_order_list', new URLSearchParams({
+      safe: 1, optionsSearchVal: 0, table_name: '', presale: 0, children: '', parent_id: '',
       starttime: start, endtime: end, status: '', refund_status: '', user_id: '', payType: '0,1,3,4,5,6,99,8,9,10',
       participate_activities: '', mealType: '0,1,2,3,4,5,6', date_type: 0, total_min: BIG_ORDER_MIN, total_max: '',
-      coupon_ids: '', waiter_id: '', pay_status: '', showChild: 0, app_version: '7.9.0', type: 1, storeid }));
-    if (String(o.status) === '-1') return { error: 'API_STATUS', api: 'get_order_list', msg: o.msg };
-    const l = o.list || [];
-    for (const x of l) {
+      coupon_ids: '', waiter_id: '', pay_status: '', showChild: 0, app_version: '7.9.0', type: 1, storeid }), 'pagesize', 100, false);
+    for (const x of orders.rows) {
       if (x.status_text !== '已支付' && !String(x.status_text || '').includes('退款')) continue;
       let goods = [];
-      try { goods = (typeof x.goods_list === 'string' ? JSON.parse(x.goods_list) : x.goods_list || []).map(g => ({ title: g.title, num: g.num, total: g.total })); } catch (e) {}
+      try { goods = (typeof x.goods_list === 'string' ? JSON.parse(x.goods_list) : x.goods_list || []).map(g => ({ title: g.title, num: g.num, total: g.total })); } catch (e) { throw new Error('ORDER_GOODS_INVALID'); }
       big_orders.push({ pay_time: x.payTime, total: x.total, pay_type: x.payType, status: x.status_text, admin_order: x.admin_order !== '0', goods });
     }
-    if (l.length < 100) break;
-  }
 
   return {
     month: MONTH, start, end, time_type: 'pay_time', fetched_at: new Date().toISOString(),
     store: (d.store_list || []).map(s => s.name), total_count: d.total_count,
     header_totals: (d.total_list || []).map(t => ({ title: t.title, value: t.value })),
-    list: (d.list || []).map(x => ({
+    list: sales.rows.map(x => ({
       classify_title: x.classify_title, title: x.title, key_list: x.key_list || [],
       type: x.type, one_price: x.one_price,
       sum_num: x.sum_num, sum_total: x.sum_total,
@@ -87,5 +111,9 @@ async () => {
     report_days, ledger,
     ledger_summary: lg.statistics || null,
     big_orders,
+    fetch_meta: {version: '0.2.0', sales: {complete:true, rows:sales.rows.length, pages:sales.pages},
+      report: {complete:true, rows:report_days.length}, ledger: {complete:true, rows:ledger.length, pages:ledgerResult.pages},
+      orders: {complete:true, rows:big_orders.length, scanned:orders.rows.length, pages:orders.pages}},
   };
+  } catch (e) { return {error: 'FETCH_FAILED', month: MONTH, reason: e.name === 'AbortError' ? 'API_TIMEOUT' : e.message}; }
 }

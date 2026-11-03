@@ -1,0 +1,9 @@
+.playwright-mcp/
+__pycache__/
+*.pyc
+*.xlsx
+*.xls
+*.audit.json
+wugan_raw_*.json
+wugan_browser_probe*.json
+.venv/
