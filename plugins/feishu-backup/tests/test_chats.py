@@ -199,6 +199,25 @@ class SaveAttachmentTest(unittest.TestCase):
         self.assertEqual(list((self.root / "群聊附件" / "项目群").glob("*")), [])
 
 
+    def test_os_error_recorded_failed_but_fatal_propagates(self):
+        # 终审 minor：下载/落位时的普通 OSError 也记 failed（下轮重试）；网络/登录/盘满照常抛出
+        from fbk import auth, fetcher
+        t = FakeTransport()
+        ctx = self.ctx(t)
+
+        def boom(*a, **k):
+            raise PermissionError(13, "Operation not permitted")
+        ctx.fetch.download_attachment = boom
+        self.assertEqual(chats.save_attachment(ctx, self.hit()), Outcome.FAILED)
+        self.assertEqual(self.store.get_attachment("fk1")["status"], "failed")
+        for exc in (auth.NetworkError("x"), auth.LoginRequired("x"), fetcher.DiskFull("x")):
+            def raiser(*a, _e=exc, **k):
+                raise _e
+            ctx.fetch.download_attachment = raiser
+            with self.assertRaises(type(exc)):
+                chats.save_attachment(ctx, self.hit("fk9", "z.txt", "m9"))
+
+
 class FailedRetryTest(unittest.TestCase):
     def test_failed_row_roundtrip_and_retry(self):
         with tempfile.TemporaryDirectory() as d:
@@ -276,6 +295,28 @@ class SearchSharedTest(unittest.TestCase):
         self.assertEqual(items[0].rel_dir, ("共享给我", "_搜索发现"))
         offs = [json.loads(c["body"])["offset"] for c in t.calls if c["path"] == "/suite/docs-api/search/object"]
         self.assertEqual(offs, [0, 50])
+
+    def test_paging_stops_before_200_cap(self):
+        # 终审 I4：offset+count 必须 < 200，到顶就停，已收集的照常返回
+        t = FakeTransport()
+        for i in range(6):
+            t.queue_json("POST", "/suite/docs-api/search/object", {
+                "docs_entities": [{"docs_token": "S%d" % i, "docs_type": "docx", "title": "t%d" % i}],
+                "has_more": True})
+        t.queue_json("POST", "/drive/v1/metas/batch_query", {"metas": []})
+        items = list(chats.search_shared(make(t), set()))
+        bodies = [json.loads(c["body"]) for c in t.calls if c["path"] == "/suite/docs-api/search/object"]
+        self.assertTrue(all(b["offset"] + b["count"] < 200 for b in bodies))
+        self.assertEqual([b["offset"] for b in bodies], [0, 50, 100, 150])
+        self.assertEqual(len(items), 4)
+
+    def test_page_error_keeps_collected(self):
+        t = FakeTransport()
+        t.queue_json("POST", "/suite/docs-api/search/object", {
+            "docs_entities": [{"docs_token": "N1", "docs_type": "docx", "title": "a"}], "has_more": True})
+        t.queue_json("POST", "/suite/docs-api/search/object", code=99992402, msg="field validation failed")
+        t.queue_json("POST", "/drive/v1/metas/batch_query", {"metas": []})
+        self.assertEqual([i.token for i in chats.search_shared(make(t), set())], ["N1"])
 
 
 if __name__ == "__main__":

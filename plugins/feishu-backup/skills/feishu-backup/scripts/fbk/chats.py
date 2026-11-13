@@ -24,6 +24,8 @@ SHARED_DIR = "共享给我"
 _URL_RE = re.compile(r"https?://\S+")
 _HINT_LEN = 80
 _BATCH = 200
+_SEARCH_PAGE = 50
+_SEARCH_CAP = 200  # 搜索接口要求 offset + count < 200
 
 
 @dataclass
@@ -184,7 +186,7 @@ def save_attachment(ctx, hit: AttachmentHit) -> Outcome:
         with _PLACE_LOCK:
             target = unique_path(desired)
             os.replace(str(tmp), str(target))
-    except ApiError as e:
+    except (ApiError, OSError) as e:  # DiskFull / NetworkError / LoginRequired 不是这两类，照常抛出
         log.warning("附件下载失败：%s/%s（%s）", hit.chat_name, hit.file_name, e)
         store.upsert_attachment(hit.file_key, status="failed", **base)
         return Outcome.FAILED
@@ -224,17 +226,27 @@ def fetch_mtimes(client, pairs) -> dict:
 
 
 def search_shared(client, known: set) -> Iterator[RemoteItem]:
-    found, offset = [], 0
+    found, seen, offset = [], set(), 0
     while True:
-        data = client.post("/suite/docs-api/search/object", {"search_key": "", "count": 50, "offset": offset})
+        count = min(_SEARCH_PAGE, _SEARCH_CAP - 1 - offset)
+        if count <= 0:
+            log.info("搜索结果超过接口上限（offset+count < %d），后面的没有取", _SEARCH_CAP)
+            break
+        try:
+            data = client.post("/suite/docs-api/search/object",
+                               {"search_key": "", "count": count, "offset": offset})
+        except ApiError as e:
+            log.warning("搜索翻页失败，保留已取到的 %d 个：%s", len(found), e)
+            break
         ents = data.get("docs_entities") or []
         for e in ents:
             ty, tok = e.get("docs_type"), e.get("docs_token")
-            if tok and tok not in known and (ty == "file" or ty in EXPORT_EXT):
+            if tok and tok not in known and tok not in seen and (ty == "file" or ty in EXPORT_EXT):
+                seen.add(tok)
                 found.append((tok, ty, e.get("title") or tok))
         if not data.get("has_more") or not ents:
             break
-        offset += 50
+        offset += count
     mt = fetch_mtimes(client, [(t, ty) for t, ty, _ in found])
     for tok, ty, title in found:
         yield RemoteItem(token=tok, type=ty, name=title, rel_dir=(SHARED_DIR, "_搜索发现"),
