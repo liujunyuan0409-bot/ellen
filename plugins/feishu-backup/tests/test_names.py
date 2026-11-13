@@ -35,6 +35,32 @@ class NamesTest(unittest.TestCase):
             (d / "a-2.pdf").write_text("x")
             self.assertEqual(unique_path(d / "a.pdf").name, "a-3.pdf")
 
+    def test_sanitize_never_empty_or_dot_only(self):
+        for bad in ("..", ".", "   ", ""):
+            self.assertEqual(sanitize(bad), "_")
+        self.assertNotIn(sanitize("..pdf").strip("."), ("",))
+
+    def test_version_name_long_stays_within_255(self):
+        name = sanitize("长" * 200 + ".xlsx")
+        v = version_name(name, 1759390200)
+        self.assertLessEqual(len(v.encode()), 255)
+        self.assertTrue(v.endswith("_2025-10-02_1530.xlsx"))
+
+    def test_unique_path_long_name_within_255(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            p = d / ("长" * 80 + ".pdf")
+            p.write_text("x")
+            u = unique_path(p)
+            self.assertNotEqual(u, p)
+            self.assertLessEqual(len(u.name.encode()), 255)
+            self.assertTrue(u.name.endswith("-2.pdf"))
+
+    def test_local_filename_long_within_240(self):
+        n = local_filename("docx", "长" * 300)
+        self.assertLessEqual(len(n.encode()), 240)
+        self.assertTrue(n.endswith(".pdf"))
+
 
 if __name__ == "__main__":
     unittest.main()
