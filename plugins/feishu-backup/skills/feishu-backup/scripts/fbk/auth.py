@@ -17,127 +17,33 @@ REDIRECT_URI = "http://127.0.0.1:8765/callback"
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 REFRESH_MARGIN = 300  # 离过期不到这么多秒就续期
 
-# 设计文档 §3 的授权范围（auth:user.id:read 由飞书隐式授予，不列入）
+# 登录时申请的权限：只列程序实际调用到的只读接口所需（auth:user.id:read 由飞书隐式授予，不列入）。
+# 开发者后台给应用开了更多权限也没关系，程序只申请这些，且 HTTP 客户端只放行读取类请求。
 SCOPES = [
-    "base:app:copy",
-    "base:app:create",
-    "base:app:read",
-    "base:app:update",
-    "base:appmode_block:create",
-    "base:appmode_block:delete",
-    "base:appmode_block:read",
-    "base:appmode_block:update",
-    "base:appmode_page:create",
-    "base:appmode_page:delete",
-    "base:appmode_page:read",
-    "base:dashboard:copy",
-    "base:dashboard:create",
-    "base:dashboard:delete",
-    "base:dashboard:read",
-    "base:dashboard:update",
-    "base:workspace:create",
-    "base:workspace:list",
-    "base:workspace:read",
-    "base:workspace:update",
-    "bitable:app",
-    "bitable:app:readonly",
-    "board:whiteboard:node:create",
-    "board:whiteboard:node:delete",
-    "board:whiteboard:node:read",
-    "board:whiteboard:node:update",
-    "docs:doc",
-    "docs:doc:readonly",
-    "docs:document.comment:create",
-    "docs:document.comment:delete",
-    "docs:document.comment:read",
-    "docs:document.comment:update",
-    "docs:document.comment:write_only",
-    "docs:document:copy",
-    "docs:document:export",
-    "docs:document:import",
-    "docs:document.media:download",
-    "docs:document.media:upload",
-    "docs:permission.member",
-    "docs:permission.member:auth",
-    "docs:permission.member:create",
-    "docs:permission.member:delete",
-    "docs:permission.member:readonly",
-    "docs:permission.member:retrieve",
-    "docs:permission.member:transfer",
-    "docs:permission.member:update",
-    "docx:document",
-    "docx:document.block:convert",
-    "docx:document:create",
-    "docx:document:readonly",
-    "docx:document:write_only",
-    "drive:document.content:read",
-    "drive:document.mention:read",
-    "drive:drive",
-    "drive:drive.metadata:readonly",
-    "drive:drive.search:readonly",
-    "drive:drive:readonly",
-    "drive:drive:version",
-    "drive:drive:version:readonly",
-    "drive:export:readonly",
-    "drive:file",
-    "drive:file.like:readonly",
-    "drive:file:download",
-    "drive:file:readonly",
-    "drive:file:upload",
-    "drive:file:view_record:readonly",
-    "im:chat",
-    "im:chat:read",
-    "im:chat:readonly",
-    "im:chat:update",
-    "im:message",
-    "im:message:readonly",
-    "im:resource",
-    "mindnote:node:create",
-    "mindnote:node:read",
-    "minutes:minutes",
-    "minutes:minutes.artifacts:read",
-    "minutes:minutes.basic:read",
-    "minutes:minutes.media:export",
-    "minutes:minutes.search:read",
-    "minutes:minutes:readonly",
-    "search:docs:read",
-    "sheets:spreadsheet",
-    "sheets:spreadsheet.meta:read",
-    "sheets:spreadsheet.meta:write_only",
-    "sheets:spreadsheet:create",
-    "sheets:spreadsheet:read",
-    "sheets:spreadsheet:readonly",
-    "sheets:spreadsheet:write_only",
-    "slides:presentation:create",
-    "slides:presentation:read",
-    "slides:presentation:update",
-    "slides:presentation:write_only",
-    "space:document.event:read",
-    "space:document:delete",
-    "space:document:move",
-    "space:document:retrieve",
-    "space:document:shortcut",
-    "space:folder:create",
-    "wiki:member:create",
-    "wiki:member:retrieve",
-    "wiki:member:update",
-    "wiki:node:copy",
-    "wiki:node:create",
-    "wiki:node:move",
-    "wiki:node:read",
-    "wiki:node:retrieve",
-    "wiki:node:update",
-    "wiki:setting:read",
-    "wiki:space:read",
-    "wiki:space:retrieve",
-    "wiki:space:write_only",
-    "wiki:wiki",
-    "wiki:wiki:readonly",
-    "contact:user.base:readonly",
-    "offline_access",
-    "im:message.group_msg:get_as_user",
-    "im:message.p2p_msg:get_as_user",
-    "im:chat.members:read",
+    "drive:drive:readonly",  # 列我的空间、根目录
+    "drive:drive.metadata:readonly",  # 批量读修改时间（metas/batch_query）
+    "drive:file:readonly",  # 读上传的文件
+    "drive:file:download",  # 下载上传的文件
+    "drive:export:readonly",  # 导出任务
+    "docs:document:export",  # 导出在线文档
+    "docs:doc:readonly",  # 导出旧版文档
+    "docx:document:readonly",  # 导出文档
+    "sheets:spreadsheet:readonly",  # 导出电子表格
+    "bitable:app:readonly",  # 导出多维表格
+    "slides:presentation:read",  # 导出幻灯片
+    "wiki:wiki:readonly",  # 知识库
+    "wiki:node:read",  # 知识库节点 / get_node
+    "wiki:space:read",  # 知识库空间列表
+    "space:document:retrieve",  # 云空间文件列表
+    "search:docs:read",  # 搜索共享给我的文档
+    "docs:permission.member:auth",  # 判断链接能否打开
+    "im:chat:readonly",  # 列群
+    "im:message:readonly",  # 读群消息
+    "im:message.group_msg:get_as_user",  # 以用户身份读群消息
+    "im:resource",  # 下载群附件
+    "im:chat.members:read",  # 群成员姓名（权限缺口报告的分享人）
+    "contact:user.base:readonly",  # 登录后显示用户名
+    "offline_access",  # refresh token，自动续期
 ]
 
 

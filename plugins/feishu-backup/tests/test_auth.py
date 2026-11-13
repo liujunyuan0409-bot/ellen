@@ -24,9 +24,32 @@ class AuthTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_scopes_list(self):
-        self.assertEqual(len(auth.SCOPES), 119)
-        self.assertEqual(len(set(auth.SCOPES)), 119)
+        # 终审 I3：登录时只申请实际用到的只读权限
+        expected = {
+            "drive:drive:readonly", "drive:drive.metadata:readonly", "drive:file:readonly", "drive:file:download",
+            "drive:export:readonly", "docs:document:export", "docs:doc:readonly", "docx:document:readonly",
+            "sheets:spreadsheet:readonly", "bitable:app:readonly", "slides:presentation:read",
+            "wiki:wiki:readonly", "wiki:node:read", "wiki:space:read", "space:document:retrieve",
+            "search:docs:read", "docs:permission.member:auth", "im:chat:readonly", "im:message:readonly",
+            "im:message.group_msg:get_as_user", "im:resource", "im:chat.members:read",
+            "contact:user.base:readonly", "offline_access"}
+        self.assertEqual(set(auth.SCOPES), expected)
+        self.assertEqual(len(auth.SCOPES), len(expected))
         self.assertNotIn("auth:user.id:read", auth.SCOPES)
+        writes = [s for s in auth.SCOPES if s.endswith((":create", ":update", ":delete", ":write_only", ":upload",
+                                                        ":move", ":copy", ":import"))
+                  or s in ("drive:drive", "drive:file", "docs:doc", "docx:document", "im:message", "im:chat",
+                           "bitable:app", "sheets:spreadsheet", "wiki:wiki")]
+        self.assertEqual(writes, [])
+
+    def test_readme_scope_json_matches(self):
+        import json as _json
+        import re as _re
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+        block = _re.search(r"```json\n(.*?)```", readme, _re.S).group(1)
+        d = _json.loads(block)
+        self.assertEqual(sorted(d["scopes"]["user"]), sorted(auth.SCOPES))
+        self.assertEqual(d["scopes"]["tenant"], [])
 
     def test_authorize_url_contains_scope_and_state(self):
         url = auth.build_authorize_url("cli_fake", auth.REDIRECT_URI, ["a:b", "c:d"], "st123")
