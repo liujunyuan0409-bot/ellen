@@ -101,10 +101,11 @@ class ProcessLinkTest(unittest.TestCase):
             t = FakeTransport()
             auth(t, "AbCdEfGhIjK1", data={"auth_result": True})
             t.queue_json("POST", "/drive/v1/metas/batch_query", {"metas": [
-                {"doc_token": "AbCdEfGhIjK1", "latest_modify_time": "1700000009"}]})
+                {"doc_token": "AbCdEfGhIjK1", "latest_modify_time": "1700000009", "title": "2026预算"}]})
             hit = chats.LinkHit("docx", "AbCdEfGhIjK1", "项目群", "张三", 1763020800, "预算", "https://x/docx/AbCdEfGhIjK1")
             item = perms.process_link(make(t), s, hit, known=set(), now=1763100000)
             self.assertEqual(item.rel_dir, ("共享给我", "项目群"))
+            self.assertEqual(item.name, "2026预算")
             self.assertEqual((item.source, item.type, item.token, item.mtime), ("shared", "docx", "AbCdEfGhIjK1", 1700000009))
             row = s.links()[0]
             self.assertEqual((row["status"], row["first_seen"], row["url"]), ("ok", 1763100000, "https://x/docx/AbCdEfGhIjK1"))

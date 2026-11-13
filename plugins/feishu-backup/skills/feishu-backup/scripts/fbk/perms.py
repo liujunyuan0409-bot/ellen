@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 
 from . import chats
 from .client import ApiError
-from .names import EXPORT_EXT, SHANGHAI
+from .names import EXPORT_EXT, SHANGHAI, sanitize
 from .walker import RemoteItem
 
 log = logging.getLogger(__name__)
@@ -50,8 +50,8 @@ def process_link(client, store, hit, known: set, now: int) -> Optional[RemoteIte
                       chat_name=hit.chat_name, sent_at=hit.sent_at, first_seen=int(now), url=hit.url)
     if status != "ok" or real in known or not (ftype == "file" or ftype in EXPORT_EXT):
         return None
-    mtime = chats.fetch_mtimes(client, [(real, ftype)]).get(real, 0)
-    return RemoteItem(token=real, type=ftype, name=hit.hint.strip()[:50] or real,
+    mtime, title = chats.fetch_mtimes(client, [(real, ftype)]).get(real, (0, ""))
+    return RemoteItem(token=real, type=ftype, name=sanitize(title or hit.hint.strip()[:50] or real),
                       rel_dir=(chats.SHARED_DIR, hit.chat_name), source="shared", mtime=mtime)
 
 

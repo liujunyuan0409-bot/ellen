@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS runs (
 
 _ITEM_COLS = {"type", "source", "remote_dir", "name", "remote_mtime", "local_path",
               "sha256", "status", "also_seen", "last_backup_at"}
-_ATT_COLS = {"chat_id", "message_id", "sha256", "local_path", "status"}
+_ATT_COLS = {"chat_id", "message_id", "sha256", "local_path", "status", "file_name", "chat_name", "sent_at"}
 _LINK_COLS = {"kind", "status", "hint", "sender", "chat_name", "sent_at", "first_seen", "url"}
 
 
@@ -51,6 +51,10 @@ class Store:
             self._conn.executescript(_SCHEMA)
             # 旧库迁移：links 表补 url 列
             cols = {r[1] for r in self._conn.execute("PRAGMA table_info(links)")}
+            acols = {r[1] for r in self._conn.execute("PRAGMA table_info(attachments)")}
+            for col, typ in (("file_name", "TEXT"), ("chat_name", "TEXT"), ("sent_at", "INTEGER")):
+                if col not in acols:
+                    self._conn.execute("ALTER TABLE attachments ADD COLUMN %s %s" % (col, typ))
             if "url" not in cols:
                 self._conn.execute("ALTER TABLE links ADD COLUMN url TEXT")
             self._conn.execute("PRAGMA user_version = 1")
@@ -122,6 +126,9 @@ class Store:
     # attachments
     def upsert_attachment(self, file_key, **cols):
         self._upsert("attachments", "file_key", file_key, cols, _ATT_COLS)
+
+    def attachments_by_status(self, status):
+        return self._read("SELECT * FROM attachments WHERE status=? ORDER BY file_key", (status,))
 
     def get_attachment(self, file_key) -> Optional[sqlite3.Row]:
         rows = self._read("SELECT * FROM attachments WHERE file_key=?", (file_key,))

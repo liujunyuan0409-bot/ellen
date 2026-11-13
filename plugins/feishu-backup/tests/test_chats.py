@@ -199,6 +199,51 @@ class SaveAttachmentTest(unittest.TestCase):
         self.assertEqual(list((self.root / "群聊附件" / "项目群").glob("*")), [])
 
 
+class FailedRetryTest(unittest.TestCase):
+    def test_failed_row_roundtrip_and_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            store = Store(root / ".feishu-backup" / "manifest.sqlite")
+            t = FakeTransport()
+            t.queue_json("GET", "/im/v1/messages/m1/resources/fk1", code=234001, msg="x", status=400)
+            ctx = SyncContext(client=make(t), store=store, root=root)
+            ctx.fetch = _Fetch()
+            hit = chats.AttachmentHit("oc_1", "项目群", "m1", "fk1", "a.txt", 1763020800)
+            self.assertEqual(chats.save_attachment(ctx, hit), Outcome.FAILED)
+            self.assertEqual(chats.failed_attachment_hits(store), [hit])
+            t2 = FakeTransport()
+            t2.queue("GET", "/im/v1/messages/m1/resources/fk1", body=b"data")
+            ctx.client = make(t2)
+            self.assertEqual(chats.save_attachment(ctx, chats.failed_attachment_hits(store)[0]), Outcome.NEW)
+            self.assertEqual(store.get_attachment("fk1")["status"], "ok")
+            self.assertEqual(chats.failed_attachment_hits(store), [])
+            store.close()
+
+    def test_attachments_migration(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / ".feishu-backup" / "m.sqlite"
+            db.parent.mkdir()
+            c = sqlite3.connect(str(db))
+            c.execute("CREATE TABLE attachments (file_key TEXT PRIMARY KEY, chat_id TEXT, message_id TEXT, "
+                      "sha256 TEXT, local_path TEXT, status TEXT)")
+            c.commit()
+            c.close()
+            s = Store(db)
+            s.upsert_attachment("k", file_name="f", chat_name="g", sent_at=3, status="failed")
+            self.assertEqual(s.get_attachment("k")["sent_at"], 3)
+            s.close()
+
+    def test_empty_chat_name_uses_chat_id(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / ".feishu-backup" / "m.sqlite")
+            t = FakeTransport()
+            setup_chat(t, [msg("m1", "text", {"text": DOC})], chat_name="...")
+            hits = list(chats.scan(make(t), store, 180, NOW))
+            self.assertEqual(hits[0].chat_name, "oc_1")
+            store.close()
+
+
 class _Fetch:
     """真实 fetcher，但磁盘余量检查不依赖本机。"""
     def __getattr__(self, n):
@@ -221,7 +266,7 @@ class SearchSharedTest(unittest.TestCase):
                               {"docs_token": "N3", "docs_type": "mindnote", "title": "脑图"}],
             "has_more": False, "total": 3})
         t.queue_json("POST", "/drive/v1/metas/batch_query", {"metas": [
-            {"doc_token": "N1", "latest_modify_time": "1700000001"},
+            {"doc_token": "N1", "latest_modify_time": "1700000001", "title": "新表"},
             {"doc_token": "N2", "latest_modify_time": "1700000002"}]})
         items = list(chats.search_shared(make(t), {"K1"}))
         self.assertEqual([i.token for i in items], ["N1", "N2"])

@@ -144,7 +144,8 @@ def scan(client, store, lookback_days: int, now: int) -> Iterator[Union[LinkHit,
     floor = int(now) - int(lookback_days) * 86400
     for chat in client.paginate("/im/v1/chats", {"page_size": 100}, "items"):
         chat_id = chat["chat_id"]
-        chat_name = sanitize(chat.get("name") or "") if chat.get("name") else chat_id
+        raw_name = (chat.get("name") or "").strip()
+        chat_name = sanitize(raw_name) if raw_name.strip(".") else chat_id
         cur = store.get_cursor(chat_id)
         start = max(cur + 1 if cur is not None else 0, floor)
         latest = None
@@ -169,7 +170,8 @@ def save_attachment(ctx, hit: AttachmentHit) -> Outcome:
     folder = ctx.root / ATTACH_DIR / (sanitize(hit.chat_name) or hit.chat_id)
     desired = folder / sanitize(attachment_filename(hit.sent_at, hit.file_name))
     tmp = folder / (".dl-%s.fbk-new" % re.sub(r"[^A-Za-z0-9]", "", hit.file_key)[:24])
-    base = dict(chat_id=hit.chat_id, message_id=hit.message_id)
+    base = dict(chat_id=hit.chat_id, message_id=hit.message_id, file_name=hit.file_name,
+                chat_name=hit.chat_name, sent_at=hit.sent_at)
     ctx.fetch.ensure_space(ctx.root, 0)
     try:
         ctx.fetch.download_attachment(ctx.client, hit.message_id, hit.file_key, tmp)
@@ -194,8 +196,15 @@ def save_attachment(ctx, hit: AttachmentHit) -> Outcome:
     return Outcome.NEW
 
 
+def failed_attachment_hits(store) -> list:
+    """清单里下载失败的附件，重建成 AttachmentHit，供 runner 每轮重试。"""
+    return [AttachmentHit(r["chat_id"], r["chat_name"] or r["chat_id"], r["message_id"], r["file_key"],
+                          r["file_name"] or "%s.opus" % r["message_id"], r["sent_at"] or 0)
+            for r in store.attachments_by_status("failed")]
+
+
 def fetch_mtimes(client, pairs) -> dict:
-    """pairs: [(token, type)] → {token: mtime}。批量 ≤200。失败的批次记 0。"""
+    """pairs: [(token, type)] → {token: (mtime, title)}。批量 ≤200。失败的批次缺省。"""
     out = {}
     pairs = list(pairs)
     for i in range(0, len(pairs), _BATCH):
@@ -208,9 +217,9 @@ def fetch_mtimes(client, pairs) -> dict:
             continue
         for meta in data.get("metas") or []:
             try:
-                out[meta["doc_token"]] = int(meta.get("latest_modify_time") or 0)
+                out[meta["doc_token"]] = (int(meta.get("latest_modify_time") or 0), meta.get("title") or "")
             except (TypeError, ValueError):
-                out[meta.get("doc_token")] = 0
+                out[meta.get("doc_token")] = (0, meta.get("title") or "")
     return out
 
 
@@ -229,4 +238,4 @@ def search_shared(client, known: set) -> Iterator[RemoteItem]:
     mt = fetch_mtimes(client, [(t, ty) for t, ty, _ in found])
     for tok, ty, title in found:
         yield RemoteItem(token=tok, type=ty, name=title, rel_dir=(SHARED_DIR, "_搜索发现"),
-                         source="shared", mtime=mt.get(tok, 0))
+                         source="shared", mtime=mt.get(tok, (0, ""))[0])
