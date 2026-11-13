@@ -14,6 +14,9 @@ log = logging.getLogger(__name__)
 
 _STATUS_CN = {"ok": "能打开", "denied": "无权限", "gone": "已删除或无效", "retry": "待重试"}
 _HEADER = ["状态", "类型", "链接", "文件名线索", "分享人", "群名", "分享时间", "首次发现日期"]
+# 只有这些明确的「不存在 / 已删除」错误码才判 gone（永久，不再重试）；权限类判 denied；其余抛出，由 runner 记为待重试
+_GONE_CODES = {131005, 1063005, 1063001}
+_DENIED_CODES = {131006, 1063002}
 _LIMIT = "# 局限：只能发现出现在备份账号所在群里、或能搜索到的文件；全企业盘点需要付费版审计日志。"
 
 
@@ -24,15 +27,17 @@ def resolve(client, kind: str, token: str) -> Tuple[str, Optional[str], str]:
         try:
             data = client.get("/wiki/v2/spaces/get_node", {"token": token})
         except ApiError as e:
-            if e.code in (131006, 1063002) or "permission" in str(e.msg).lower():
+            if e.code in _DENIED_CODES or "permission" in str(e.msg).lower():
                 return "denied", None, token
-            return "gone", None, token
+            if e.code in _GONE_CODES:
+                return "gone", None, token
+            raise
         node = data.get("node") or {}
         real, ftype = node.get("obj_token") or token, node.get("obj_type")
     try:
         data = client.get("/drive/v1/permissions/%s/members/auth" % real, {"type": ftype, "action": "view"})
     except ApiError as e:
-        if e.code in (1063005, 1063001):
+        if e.code in (1063005, 1063001):  # 与 _GONE_CODES 中 drive 的两个一致
             return "gone", ftype, real
         raise
     return ("ok" if data.get("auth_result") else "denied"), ftype, real

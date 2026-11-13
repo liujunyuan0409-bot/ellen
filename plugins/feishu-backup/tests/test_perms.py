@@ -60,6 +60,17 @@ class ClassifyTest(unittest.TestCase):
         t.queue_json("GET", "/wiki/v2/spaces/get_node", code=131005, msg="not found")
         self.assertEqual(perms.classify(make(t), "wiki", "WikiTok00001"), ("gone", None))
 
+    def test_wiki_unknown_error_reraises_not_gone(self):
+        # 终审 T7：未知错误不能判成永久的「已删除」，要抛出让 runner 记为待重试
+        for code in (99999, 500, 131002):
+            t = FakeTransport()
+            t.queue_json("GET", "/wiki/v2/spaces/get_node", code=code, msg="boom")
+            with self.assertRaises(ApiError):
+                perms.classify(make(t), "wiki", "WikiTok00001")
+        t = FakeTransport()
+        t.queue_json("GET", "/wiki/v2/spaces/get_node", code=1063002, msg="x")
+        self.assertEqual(perms.classify(make(t), "wiki", "WikiTok00001"), ("denied", None))
+
 
 class ReportTest(unittest.TestCase):
     def test_csv(self):
