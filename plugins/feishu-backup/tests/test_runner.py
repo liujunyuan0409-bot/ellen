@@ -165,11 +165,28 @@ class GateTest(Base):
         self.assertEqual(self.t.calls, [])
 
     def test_already_running_quiet(self):
-        lock = self.root / ".feishu-backup" / "run.lock"
-        lock.parent.mkdir(parents=True)
-        lock.write_text(str(os.getppid()))
+        from fbk import schedule
+        held = schedule.RunLock(self.root).acquire()  # 另一个打开的文件描述上持有 flock
+        self.addCleanup(held.release)
         self.assertEqual(self.run_it(), 0)
         self.assertEqual(self.t.calls, [])
+
+    def test_stale_lock_file_after_shutdown_does_not_block(self):
+        # 终审 C2：上次被关机 SIGTERM 杀掉留下 run.lock（PID 被系统进程复用），照常备份
+        lock = self.root / ".feishu-backup" / "run.lock"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("1\n")
+        self.assertEqual(self.run_it(), 0)
+        self.assertIsNotNone(self.store().last_success())
+
+    def test_sigterm_handler_raises_system_exit(self):
+        import signal
+        prev = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, prev)
+        runner.install_term_handler()
+        with self.assertRaises(SystemExit):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)
 
     def test_offline_first_request_quiet_not_success(self):
         self.t._q[("GET", "/drive/explorer/v2/root_folder/meta")] = [

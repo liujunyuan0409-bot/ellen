@@ -447,6 +447,17 @@ class CliSetupTest(CliBase):
 
 
 class CliRunTest(CliBase):
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(runner, "install_term_handler")
+        self.term = p.start()
+        self.addCleanup(p.stop)
+
+    def test_run_installs_sigterm_handler(self):
+        with mock.patch.object(runner, "run", return_value=0):
+            self.cli("run")
+        self.term.assert_called_once_with()
+
     def test_run_passthrough(self):
         with mock.patch.object(runner, "run", return_value=3) as r:
             code, _ = self.cli("run", "--now", "--limit", "5")

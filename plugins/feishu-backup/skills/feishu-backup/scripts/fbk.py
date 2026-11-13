@@ -266,6 +266,7 @@ def cmd_scan(args):
 
 
 def cmd_run(args):
+    runner.install_term_handler()
     code = runner.run(force=args.now, limit=args.limit)
     _emit(args, {"exit_code": code, "meaning": RUN_MEANING.get(code, "")},
           "本次结果：%s" % RUN_MEANING.get(code, "退出码 %s" % code))

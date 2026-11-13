@@ -1,4 +1,6 @@
 """调度：是否到期、运行锁、LaunchAgent 安装与卸载。"""
+import errno
+import fcntl
 import os
 import plistlib
 import subprocess
@@ -32,36 +34,17 @@ class AlreadyRunning(Exception):
     pass
 
 
-def _alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # 进程存在，只是不归我们
-    except OSError:
-        return False
-    return True
-
-
 class RunLock:
-    """root/.feishu-backup/run.lock，内容为 PID。存活进程持有时抛 AlreadyRunning，死 PID 则接管。"""
+    """root/.feishu-backup/run.lock 上的 fcntl.flock 排他锁，整轮运行期间持有。
+
+    锁由内核随进程退出（含被 SIGTERM/SIGKILL 杀掉、关机）自动释放，所以不会有「死锁文件」挡住
+    以后的备份。文件里的 PID 只供人看，不参与判断；锁文件本身不删除（删了会让两个进程锁住不同的文件）。
+    """
 
     def __init__(self, root):
         self.path = Path(root) / STATE_DIR / LOCK_NAME
         self.pid = os.getpid()
-        self._held = False
-
-    def _try_create(self) -> bool:
-        try:
-            fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        except FileExistsError:
-            return False
-        with os.fdopen(fd, "w") as f:
-            f.write("%d\n" % self.pid)
-        return True
+        self._fd = None
 
     def _holder(self) -> Optional[int]:
         try:
@@ -71,26 +54,32 @@ class RunLock:
 
     def acquire(self):
         self.path.parent.mkdir(exist_ok=True)  # root 必须已存在，这里不建 root
-        for _ in range(3):
-            if self._try_create():
-                self._held = True
-                return self
-            pid = self._holder()
-            if pid is not None and pid != self.pid and _alive(pid):
-                raise AlreadyRunning("已有备份进程在运行（PID %d）" % pid)
-            try:  # 死锁文件：删掉后用 O_EXCL 重新抢，两个进程同时接管时只有一个成功
-                self.path.unlink()
-            except FileNotFoundError:
-                pass
-        raise AlreadyRunning("无法取得运行锁：%s" % self.path)
+        fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            os.close(fd)
+            if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                pid = self._holder()
+                raise AlreadyRunning("已有备份进程在运行%s" % ("（PID %d）" % pid if pid else ""))
+            raise
+        os.ftruncate(fd, 0)
+        os.write(fd, ("%d\n" % self.pid).encode())
+        self._fd = fd
+        return self
 
     def release(self):
-        if self._held and self._holder() == self.pid:
-            try:
-                self.path.unlink()
-            except FileNotFoundError:
-                pass
-        self._held = False
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     def __enter__(self):
         return self.acquire()

@@ -9,6 +9,7 @@
 import http.client
 import json
 import logging
+import signal
 import threading
 import time
 import urllib.error
@@ -316,6 +317,16 @@ def _notify_failures(r) -> None:
     if r.walk_errors:
         msg += "、%d 处目录没读全" % len(r.walk_errors)
     notify.notify_if_changed(TITLE, msg + "，详见 _报告", "run_failures", ids, now=r.now)
+
+
+def _on_term(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def install_term_handler() -> None:
+    """launchd 在关机/注销时发 SIGTERM：转成 SystemExit，让 finally（释放锁、关清单）都能执行。
+    只能在主线程调用（fbk.py run 入口）。"""
+    signal.signal(signal.SIGTERM, _on_term)
 
 
 def _probe(transport, token: str) -> None:

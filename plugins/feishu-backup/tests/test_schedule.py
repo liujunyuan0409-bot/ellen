@@ -33,6 +33,16 @@ class IsDueTest(unittest.TestCase):
         self.assertTrue(is_due(NOW - 24 * H, 24, NOW))
 
 
+_HOLDER = """
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+os.write(fd, b"%d\\n" % os.getpid())
+print("ready", flush=True)
+sys.stdin.read()
+"""
+
+
 class RunLockTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -42,18 +52,38 @@ class RunLockTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def hold_in_other_process(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        p = subprocess.Popen([sys.executable, "-c", _HOLDER, str(self.lock_path)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.assertEqual(p.stdout.readline().strip(), b"ready")
+
+        def stop():
+            p.stdin.close()
+            p.wait(5)
+            p.stdout.close()
+        self.addCleanup(stop)
+        return p
+
     def test_writes_pid_and_releases(self):
         with RunLock(self.root):
             self.assertEqual(self.lock_path.read_text().strip(), str(os.getpid()))
-        self.assertFalse(self.lock_path.exists())
+        with RunLock(self.root):  # 释放后可以再次取得
+            pass
 
-    def test_live_pid_raises(self):
-        self.lock_path.parent.mkdir(parents=True)
-        self.lock_path.write_text(str(os.getppid()))
+    def test_flock_held_by_other_process_raises(self):
+        p = self.hold_in_other_process()
         with self.assertRaises(AlreadyRunning):
             with RunLock(self.root):
                 self.fail("不应进入")
-        self.assertEqual(self.lock_path.read_text().strip(), str(os.getppid()))  # 别人的锁不动
+        self.assertEqual(self.lock_path.read_text().strip(), str(p.pid))  # 别人的锁不动
+
+    def test_stale_pid_1_without_flock_is_taken_over(self):
+        # 终审 C2：关机时被 SIGTERM 杀掉留下的锁文件，PID 被系统进程复用也不能挡住备份
+        self.lock_path.parent.mkdir(parents=True)
+        self.lock_path.write_text("1\n")
+        with RunLock(self.root):
+            self.assertEqual(self.lock_path.read_text().strip(), str(os.getpid()))
 
     def test_dead_pid_taken_over(self):
         self.lock_path.parent.mkdir(parents=True)
@@ -66,6 +96,13 @@ class RunLockTest(unittest.TestCase):
         self.lock_path.write_text("not-a-pid")
         with RunLock(self.root):
             self.assertEqual(self.lock_path.read_text().strip(), str(os.getpid()))
+
+    def test_lock_released_when_holder_killed(self):
+        p = self.hold_in_other_process()
+        p.kill()
+        p.wait(5)
+        with RunLock(self.root):
+            pass
 
 
 class PlistTest(unittest.TestCase):
