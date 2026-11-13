@@ -1,3 +1,4 @@
+import http.client
 import sys
 import tempfile
 import unittest
@@ -102,6 +103,38 @@ class ClientTest(unittest.TestCase):
             with self.assertRaises(ApiError):
                 c.download("/d", Path(d) / "f")
             self.assertFalse((Path(d) / "f").exists())
+
+    def test_download_streams_to_dest(self):
+        t = FakeTransport().queue("GET", "/d", status=200, body=b"hello")
+        c, _ = make(t)
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "f"
+            self.assertEqual(c.download("/d", dest), 5)
+            self.assertEqual(dest.read_bytes(), b"hello")
+
+    def test_incomplete_read_is_retried(self):
+        t = (FakeTransport().queue("GET", "/d", body=http.client.IncompleteRead(b"he"))
+             .queue("GET", "/d", status=200, body=b"hello"))
+        c, sleeps = make(t)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(c.download("/d", Path(d) / "f"), 5)
+        self.assertEqual(len(t.calls), 2)
+
+    def test_head_size_200_uses_content_length(self):
+        t = FakeTransport().queue("GET", "/d", status=200, headers={"Content-Length": "123"}, body=b"x" * 123)
+        c, _ = make(t)
+        self.assertEqual(c.head_size("/d"), 123)
+
+    def test_head_size_none_without_headers(self):
+        t = FakeTransport().queue("GET", "/d", status=200, body=b"x")
+        c, _ = make(t)
+        self.assertIsNone(c.head_size("/d"))
+
+    def test_head_size_403_raises(self):
+        t = FakeTransport().queue_json("GET", "/d", code=1061004, status=403)
+        c, _ = make(t)
+        with self.assertRaises(ApiError):
+            c.head_size("/d")
 
     def test_rate_limit_spaces_requests(self):
         t = FakeTransport().queue_json("GET", "/x", {})

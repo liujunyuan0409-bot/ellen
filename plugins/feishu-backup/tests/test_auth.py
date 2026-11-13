@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import time
@@ -51,7 +52,6 @@ class AuthTest(unittest.TestCase):
         saved = config.load_token()
         self.assertEqual(saved["refresh_token"], "R2")
         self.assertGreater(saved["obtained_at"], int(time.time()) - 5)
-        import json
         sent = json.loads(t.calls[0]["body"])
         self.assertEqual(sent["grant_type"], "refresh_token")
         self.assertEqual(sent["refresh_token"], "R1")
@@ -63,6 +63,42 @@ class AuthTest(unittest.TestCase):
             "code": 20037, "error": "invalid_grant"})
         with self.assertRaises(auth.LoginRequired):
             auth.TokenManager(CFG, transport=t).access_token()
+
+    def _stale(self, **extra):
+        tok = {"access_token": "old", "refresh_token": "R1", "expires_in": 7200,
+               "obtained_at": int(time.time()) - 7000}
+        tok.update(extra)
+        config.save_token(tok)
+
+    def test_refresh_5xx_then_success(self):
+        self._stale()
+        t = (FakeTransport().queue("POST", "/authen/v2/oauth/token", status=502, body=b"bad gateway")
+             .queue("POST", "/authen/v2/oauth/token", body={
+                 "code": 0, "access_token": "new", "refresh_token": "R2", "expires_in": 7200}))
+        sleeps = []
+        tm = auth.TokenManager(CFG, transport=t, sleep=sleeps.append)
+        self.assertEqual(tm.access_token(), "new")
+        self.assertEqual(sleeps, [1])
+
+    def test_refresh_persistent_network_error_raises_network_error(self):
+        self._stale()
+        calls = []
+
+        def tr(m, u, h, b):
+            calls.append(1)
+            raise OSError("down")
+        tm = auth.TokenManager(CFG, transport=tr, sleep=lambda s: None)
+        with self.assertRaises(auth.NetworkError):
+            tm.access_token()
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(config.load_token()["access_token"], "old")
+
+    def test_refresh_keeps_old_refresh_token_if_missing(self):
+        self._stale()
+        t = FakeTransport().queue("POST", "/authen/v2/oauth/token", body={
+            "code": 0, "access_token": "new", "expires_in": 7200})
+        auth.TokenManager(CFG, transport=t).access_token()
+        self.assertEqual(config.load_token()["refresh_token"], "R1")
 
     def test_no_token_raises_login_required(self):
         with self.assertRaises(auth.LoginRequired):

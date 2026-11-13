@@ -1,8 +1,10 @@
 """OAuth 登录、token 续期、租户 token。只用标准库。"""
+import http.client
 import json
 import secrets
 import threading
 import time
+import urllib.error
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
@@ -143,6 +145,13 @@ class LoginRequired(Exception):
     pass
 
 
+class NetworkError(Exception):
+    """网络异常或 5xx：暂时性故障，不代表需要重新登录。"""
+
+
+RETRIES = 3
+
+
 def build_authorize_url(app_id, redirect_uri, scopes, state):
     return AUTHORIZE_URL + "?" + urlencode({
         "client_id": app_id,
@@ -152,20 +161,31 @@ def build_authorize_url(app_id, redirect_uri, scopes, state):
     })
 
 
-def _post_json(transport, path, payload):
+def _post_json(transport, path, payload, sleep=time.sleep):
     body = json.dumps(payload).encode("utf-8")
-    status, _h, raw = transport("POST", DEFAULT_BASE + path,
-                                {"Content-Type": "application/json; charset=utf-8"}, body)
-    try:
-        return json.loads(raw.decode("utf-8"))
-    except ValueError:
-        return {"code": status or -1, "msg": "非 JSON 响应"}
+    last = None
+    for attempt in range(RETRIES + 1):
+        try:
+            status, _h, raw = transport("POST", DEFAULT_BASE + path,
+                                        {"Content-Type": "application/json; charset=utf-8"}, body)
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            last = e
+        else:
+            if status < 500:
+                try:
+                    return json.loads(raw.decode("utf-8"))
+                except ValueError:
+                    return {"code": status or -1, "msg": "非 JSON 响应"}
+            last = "HTTP %s" % status
+        if attempt < RETRIES:
+            sleep(2 ** attempt)
+    raise NetworkError("网络异常，稍后重试：%s" % last)
 
 
-def _exchange(cfg, transport, **grant):
+def _exchange(cfg, transport, sleep=time.sleep, **grant):
     payload = {"client_id": cfg.app_id, "client_secret": cfg.app_secret}
     payload.update(grant)
-    return _post_json(transport, "/authen/v2/oauth/token", payload)
+    return _post_json(transport, "/authen/v2/oauth/token", payload, sleep)
 
 
 def _stamp(resp):
@@ -226,10 +246,11 @@ def run_login(cfg, open_browser=True, timeout=600, transport=None, port=8765):
 
 
 class TokenManager:
-    def __init__(self, cfg, transport=None, now=time.time):
+    def __init__(self, cfg, transport=None, now=time.time, sleep=time.sleep):
         self.cfg = cfg
         self.transport = transport or default_transport
         self.now = now
+        self._sleep = sleep
         self._lock = threading.Lock()
 
     def access_token(self):
@@ -246,10 +267,11 @@ class TokenManager:
         rt = tok.get("refresh_token")
         if not rt:
             raise LoginRequired("没有 refresh token，请重新登录")
-        resp = _exchange(self.cfg, self.transport, grant_type="refresh_token", refresh_token=rt)
+        resp = _exchange(self.cfg, self.transport, self._sleep, grant_type="refresh_token", refresh_token=rt)
         if resp.get("code", 0) != 0 or "access_token" not in resp:
             raise LoginRequired("续期失败（code=%s），请重新登录" % resp.get("code"))
-        new = _stamp(resp)
+        new = dict(tok)
+        new.update(resp)
         new["obtained_at"] = int(self.now())
         config.save_token(new)
         return new["access_token"]
