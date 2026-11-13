@@ -101,6 +101,22 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(s2.all_tokens(), {"d"})
         s2.close()
 
+    def test_link_url_column_and_migration(self):
+        self.s.upsert_link("TOK", kind="docx", url="https://example.feishu.cn/docx/TOK", first_seen=5)
+        self.assertEqual(self.s.links()[0]["url"], "https://example.feishu.cn/docx/TOK")
+        # 旧库（links 无 url 列）打开时自动补列
+        import sqlite3
+        db = self.root / ".feishu-backup" / "old.sqlite"
+        c = sqlite3.connect(str(db))
+        c.execute("CREATE TABLE links (token TEXT PRIMARY KEY, kind TEXT, status TEXT, hint TEXT, "
+                  "sender TEXT, chat_name TEXT, sent_at INTEGER, first_seen INTEGER)")
+        c.commit()
+        c.close()
+        s2 = Store(db)
+        s2.upsert_link("X", url="u")
+        self.assertEqual(s2.links()[0]["url"], "u")
+        s2.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS runs (
 _ITEM_COLS = {"type", "source", "remote_dir", "name", "remote_mtime", "local_path",
               "sha256", "status", "also_seen", "last_backup_at"}
 _ATT_COLS = {"chat_id", "message_id", "sha256", "local_path", "status"}
-_LINK_COLS = {"kind", "status", "hint", "sender", "chat_name", "sent_at", "first_seen"}
+_LINK_COLS = {"kind", "status", "hint", "sender", "chat_name", "sent_at", "first_seen", "url"}
 
 
 def _norm(k, v):
@@ -49,6 +49,10 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            # 旧库迁移：links 表补 url 列
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(links)")}
+            if "url" not in cols:
+                self._conn.execute("ALTER TABLE links ADD COLUMN url TEXT")
             self._conn.execute("PRAGMA user_version = 1")
             self._conn.commit()
 
