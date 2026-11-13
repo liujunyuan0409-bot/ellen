@@ -125,6 +125,37 @@ class EndToEndTest(Base):
         self.assertEqual(sorted(p.name for p in (self.root / "_报告").iterdir()),
                          ["2026-03-01_1000_备份日志.md", "2026-03-01_1105_备份日志.md", "2026-03-01_权限缺口.csv"])
 
+    def _copy_and_rerun(self, delete_old):
+        import shutil
+        self.preset_drive()
+        self.assertEqual(self.run_it(), 0)
+        new_root = Path(self.tmp.name) / "新电脑" / "飞书备份"
+        shutil.copytree(str(self.root), str(new_root))
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file()
+                        and ".feishu-backup" not in p.parts and "_报告" not in p.parts)
+        if delete_old:
+            shutil.rmtree(str(self.root))
+        config.save_config(config.Config(app_id="cli_fake", app_secret="sec_fake", backup_root=new_root))
+        self.assertEqual(self.run_it(now=NOW + 86400), 0)
+        text = sorted((new_root / "_报告").glob("*_备份日志.md"))[-1].read_text(encoding="utf-8")
+        self.assertIn("未变化 2", text)
+        self.assertIn("新增 0", text)
+        self.assertIn("移动 0", text)
+        after = sorted(str(p.relative_to(new_root)) for p in new_root.rglob("*") if p.is_file()
+                       and ".feishu-backup" not in p.parts and "_报告" not in p.parts)
+        self.assertEqual(after, before)  # 没有 (tok6) 新副本
+        if not delete_old:
+            now_old = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file()
+                             and ".feishu-backup" not in p.parts and "_报告" not in p.parts)
+            self.assertEqual(now_old, before)  # 旧副本里的文件一个都没被搬走
+
+    def test_copied_backup_old_root_deleted_all_unchanged(self):
+        # 终审 C1：整个备份目录复制到新位置（旧的删掉）后，新位置的下一轮全部未变化
+        self._copy_and_rerun(delete_old=True)
+
+    def test_copied_backup_old_root_still_present_nothing_moved(self):
+        self._copy_and_rerun(delete_old=False)
+
     def test_run_cleans_stale_parts(self):
         self.preset_drive()
         stale = self.root / "我的空间" / "旧文件.pdf.fbk-part"

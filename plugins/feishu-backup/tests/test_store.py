@@ -23,7 +23,47 @@ class StoreTest(unittest.TestCase):
     def test_schema_and_version(self):
         names = {r[0] for r in self.s._conn.execute("select name from sqlite_master where type='table'")}
         self.assertTrue({"items", "blobs", "chat_cursor", "attachments", "links", "runs"} <= names)
-        self.assertEqual(self.s._conn.execute("pragma user_version").fetchone()[0], 1)
+        self.assertEqual(self.s._conn.execute("pragma user_version").fetchone()[0], 2)
+
+    def test_paths_stored_relative_and_resolved_against_current_root(self):
+        # 终审 C1：清单里存相对备份根目录的路径，读出来按当前根目录拼回绝对路径
+        p = self.root / "我的空间" / "a" / "周报.pdf"
+        self.s.upsert_item(token="t1", status="ok", local_path=p)
+        self.s.upsert_attachment("fk", status="ok", local_path=self.root / "群聊附件" / "群" / "x.txt")
+        self.s.add_blob("h", p)
+        raw = lambda q: self.s._conn.execute(q).fetchone()[0]  # noqa: E731
+        self.assertEqual(raw("select local_path from items"), "我的空间/a/周报.pdf")
+        self.assertEqual(raw("select local_path from attachments"), "群聊附件/群/x.txt")
+        self.assertEqual(raw("select local_path from blobs"), "我的空间/a/周报.pdf")
+        self.assertEqual(self.s.get_item("t1")["local_path"], str(p))
+        self.assertEqual(self.s.find_blob("h"), p)
+        self.assertEqual(self.s.attachments_by_status("ok")[0]["local_path"],
+                         str(self.root / "群聊附件" / "群" / "x.txt"))
+
+    def test_migrates_absolute_paths_from_old_root(self):
+        import sqlite3
+        self.s.close()
+        old = "/Volumes/旧盘/飞书备份"
+        c = sqlite3.connect(str(self.db))
+        c.execute("insert into items (token, status, local_path) values ('t1', 'ok', ?)",
+                  (old + "/我的空间/x/我的空间.pdf",))
+        c.execute("insert into items (token, status, local_path) values ('t2', 'ok', ?)",
+                  (str(self.root / "知识库" / "库" / "y.pdf"),))
+        c.execute("insert into items (token, status, local_path) values ('t3', 'ok', '/elsewhere/z.pdf')")
+        c.execute("insert into blobs values ('h', ?)", (old + "/共享给我/群/b.zip",))
+        c.execute("insert into attachments (file_key, status, local_path) values ('fk', 'ok', ?)",
+                  (old + "/群聊附件/群/2025-01-01_a.txt",))
+        c.execute("pragma user_version = 1")
+        c.commit()
+        c.close()
+        self.s = Store(self.db)
+        raw = lambda q: [r[0] for r in self.s._conn.execute(q)]  # noqa: E731
+        self.assertEqual(raw("select local_path from items order by token"),
+                         ["我的空间/x/我的空间.pdf", "知识库/库/y.pdf", "/elsewhere/z.pdf"])
+        self.assertEqual(raw("select local_path from blobs"), ["共享给我/群/b.zip"])
+        self.assertEqual(raw("select local_path from attachments"), ["群聊附件/群/2025-01-01_a.txt"])
+        self.assertEqual(self.s.get_item("t1")["local_path"], str(self.root / "我的空间" / "x" / "我的空间.pdf"))
+        self.assertEqual(self.s.get_item("t3")["local_path"], "/elsewhere/z.pdf")
 
     def test_missing_root_raises(self):
         with self.assertRaises(FileNotFoundError):
