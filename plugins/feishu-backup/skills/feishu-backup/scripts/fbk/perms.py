@@ -12,7 +12,7 @@ from .walker import RemoteItem
 
 log = logging.getLogger(__name__)
 
-_STATUS_CN = {"ok": "能打开", "denied": "无权限", "gone": "已删除或无效"}
+_STATUS_CN = {"ok": "能打开", "denied": "无权限", "gone": "已删除或无效", "retry": "待重试"}
 _HEADER = ["状态", "类型", "链接", "文件名线索", "分享人", "群名", "分享时间", "首次发现日期"]
 _LIMIT = "# 局限：只能发现出现在备份账号所在群里、或能搜索到的文件；全企业盘点需要付费版审计日志。"
 
@@ -67,8 +67,8 @@ def write_report(store, path: Path) -> dict:
     rows = list(store.links())
     denied = sum(1 for r in rows if r["status"] == "denied")
     gone = sum(1 for r in rows if r["status"] == "gone")
-    order = {"denied": 0, "gone": 1, "ok": 2}
-    rows.sort(key=lambda r: (order.get(r["status"], 3), r["token"]))
+    order = {"denied": 0, "gone": 1, "retry": 2, "ok": 3}
+    rows.sort(key=lambda r: (order.get(r["status"], 4), r["token"]))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(str(path), "w", encoding="utf-8-sig", newline="") as f:

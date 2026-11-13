@@ -7,6 +7,7 @@
 严格按顺序，上一阶段全部结束才开始下一阶段，只在阶段内并发；同一轮内不重试同一项。
 """
 import http.client
+import json
 import logging
 import threading
 import time
@@ -129,6 +130,7 @@ class _Run:
         self.ctx = sync.SyncContext(client=client, store=store, root=root, fetch=_LimitedFetch(fetch))
         self.submitted = 0
         self.walked = set()
+        self.walk_errors = []
 
     def _sync_one(self, item):
         self.reasons.clear()
@@ -177,6 +179,7 @@ class _Run:
         errors = []
         self.phase(walker.walk_my_space(self.client, errors), counted=True)
         self.phase(walker.walk_wiki(self.client, errors), counted=True)
+        self.walk_errors = errors
         for e in errors:
             self.report.error("%s：%s" % ("/".join(e.rel_dir), e.message))
         if self.limit is not None:
@@ -203,36 +206,88 @@ class _Run:
         reason = (self.reasons.take() or "未知原因，见日志") if outcome == Outcome.FAILED else ""
         self.report.add(outcome, _att_path(hit), reason)
 
+    # ---- 阶段 3：共享给我 ----
+
+    def _shared_rows(self, status):
+        rows = (self.store.get_item(t) for t in self.store.all_tokens((status,)))
+        return [r for r in rows if r is not None and r["source"] == "shared"]
+
+    @staticmethod
+    def _item_from_row(row, mtime=None) -> walker.RemoteItem:
+        rel = tuple(json.loads(row["remote_dir"])) if row["remote_dir"] else (chats.SHARED_DIR,)
+        return walker.RemoteItem(token=row["token"], type=row["type"], name=row["name"] or row["token"],
+                                 rel_dir=rel, source="shared",
+                                 mtime=int(mtime if mtime is not None else (row["remote_mtime"] or 0)))
+
+    def _pending_shared(self):
+        """上轮没完成的共享文件（status=failed）+ 已备份但云端有更新的共享文件。"""
+        out = [self._item_from_row(r) for r in self._shared_rows("failed")]
+        ok_rows = self._shared_rows("ok")
+        if ok_rows:
+            mt = chats.fetch_mtimes(self.client, [(r["token"], r["type"]) for r in ok_rows])
+            for r in ok_rows:
+                remote = mt.get(r["token"], (0, ""))[0]
+                if remote > (r["remote_mtime"] or 0):
+                    out.append(self._item_from_row(r, remote))
+        return out
+
+    def _remember(self, item):
+        """发现即落清单：本轮没来得及同步（中断、盘满）的共享文件，下轮按 failed 重试。"""
+        if self.store.get_item(item.token) is None:
+            self.store.upsert_item(token=item.token, type=item.type, source="shared",
+                                   remote_dir=list(item.rel_dir), name=item.name,
+                                   remote_mtime=item.mtime, status="failed")
+
+    def _link(self, hit, known, found):
+        try:
+            item = perms.process_link(self.client, self.store, hit, known, self.now)
+        except ApiError as e:
+            log.warning("链接检查失败，下轮重试：%s（%s）", hit.url or hit.token, e)
+            self.store.upsert_link(hit.token, kind=hit.kind, status="retry", hint=hit.hint, sender=hit.sender,
+                                   chat_name=hit.chat_name, sent_at=hit.sent_at, first_seen=int(self.now),
+                                   url=hit.url)
+            self.report.add(Outcome.FAILED, "链接 %s %s" % (hit.chat_name, hit.url or hit.token),
+                            "无法判断权限（下轮重试）：%s" % e)
+            return
+        if item is not None:
+            known.add(item.token)
+            self._remember(item)
+            found.append(item)
+
     def shared(self):
-        retry = chats.failed_attachment_hits(self.store)  # 先取，避免本轮新失败的再重试一次
-        for hit in retry:
+        retry_atts = chats.failed_attachment_hits(self.store)  # 先取，避免本轮新失败的再重试一次
+        retry_links = [chats.LinkHit(r["kind"], r["token"], r["chat_name"] or "", r["sender"] or "",
+                                     r["sent_at"] or 0, r["hint"] or "", r["url"] or "")
+                       for r in self.store.links() if r["status"] == "retry"]
+        found = self._pending_shared()
+        for hit in retry_atts:
             self.save_attachment(hit)
         known = set(self.store.all_tokens()) | set(self.ctx.done)
-        found = []
+        for hit in retry_links:
+            self._link(hit, known, found)
         try:
             for hit in chats.scan(self.client, self.store, self.lookback_days, self.now):
                 if isinstance(hit, chats.AttachmentHit):
                     self.save_attachment(hit)
                 elif isinstance(hit, chats.LinkHit):
-                    try:
-                        item = perms.process_link(self.client, self.store, hit, known, self.now)
-                    except ApiError as e:
-                        log.warning("链接检查失败：%s（%s）", hit.url or hit.token, e)
-                        self.report.add(Outcome.FAILED, "链接 %s %s" % (hit.chat_name, hit.url or hit.token),
-                                        "无法判断权限：%s" % e)
-                        continue
-                    if item is not None:
-                        known.add(item.token)
-                        found.append(item)
+                    self._link(hit, known, found)
         except ApiError as e:
             log.warning("群聊扫描失败：%s", e)
             self.report.error("群聊扫描：%s" % e)
         try:
-            found.extend(chats.search_shared(self.client, known))
+            for item in chats.search_shared(self.client, known):
+                known.add(item.token)
+                self._remember(item)
+                found.append(item)
         except ApiError as e:
             log.warning("搜索共享文件失败：%s", e)
             self.report.error("搜索共享文件：%s" % e)
-        self.phase(found, counted=False)
+        uniq, seen = [], set()
+        for item in found:
+            if item.token not in seen:
+                seen.add(item.token)
+                uniq.append(item)
+        self.phase(uniq, counted=False)
 
 
 def _probe(transport, token: str) -> None:
@@ -308,8 +363,15 @@ def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> i
         gaps = perms.write_report(store, csv_path) if limit is None else {}
         summary = dict(report.summary(), **({"权限缺口": gaps} if gaps else {}))
         report.write_markdown(log_path, started, int(time.time()))
-        store.finish_run(run_id, ok=limit is None, summary=summary)
+        # 遍历不完整也不算成功：下个小时醒来再跑（设计 §6.3）
+        store.finish_run(run_id, ok=limit is None and not r.walk_errors, summary=summary)
         log.info("本轮完成：%s", summary)
+        failed = report.counts[Outcome.FAILED]
+        if failed or r.walk_errors:
+            msg = "飞书备份有 %d 个文件失败" % failed
+            if r.walk_errors:
+                msg += "、%d 处目录没读全" % len(r.walk_errors)
+            notify.notify(TITLE, msg + "，详见 _报告", key="run_failures")
         return 0
     except (_Offline, auth.NetworkError) as e:
         log.info("网络不通，本轮跳过：%s", e)

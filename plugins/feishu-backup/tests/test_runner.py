@@ -357,6 +357,135 @@ class OrchestrationTest(Base):
         self.assertIn("我的空间/m2", arch)
 
 
+class FixRound1Test(OrchestrationTest):
+    """评审第 1 轮：共享文件发现即落清单、失败重试、链接重试、共享文件更新、遍历不全不算成功、失败通知。"""
+
+    SH = "doxSHARE001"
+
+    def shared_item(self):
+        return ri(self.SH, "shared", name="方案", rel=("共享给我", "项目群"))
+
+    def link(self):
+        return LinkHit("docx", self.SH, "项目群", "张三", NOW - 60, "方案", "https://x.feishu.cn/docx/" + self.SH)
+
+    def test_disk_full_in_phase3_shared_item_synced_next_run(self):
+        self.patch(perms, "process_link", side_effect=lambda c, s, h, k, n: self.shared_item())
+        si = self.patch(sync, "sync_item", side_effect=_Recorder(raise_on={self.SH: fetcher.DiskFull("x")}))
+        self.setup_sources(links=[self.link()])
+        self.assertEqual(self.run_it(), 4)
+        rec = _Recorder()
+        si.side_effect = rec
+        self.scan.side_effect = lambda *a, **k: iter([])  # 第二轮群里没有新消息（游标已推进）
+        self.assertEqual(self.run_it(), 0)
+        self.assertIn(self.SH, [i.token for _, i in rec.calls])
+        it = [i for _, i in rec.calls if i.token == self.SH][0]
+        self.assertEqual((it.source, it.rel_dir, it.name), ("shared", ("共享给我", "项目群"), "方案"))
+
+    def test_shared_failed_then_ok_with_real_sync(self):
+        from tests.test_sync import FakeFetch
+        ff = FakeFetch()
+        ff.content[self.SH] = RuntimeError("导出超时")
+        calls = []
+
+        def process(c, s, h, k, n):
+            calls.append(h.token)
+            return self.shared_item() if self.SH not in k else None
+
+        self.patch(perms, "process_link", side_effect=process)
+        self.setup_sources(links=[self.link()])
+        self.assertEqual(self.run_it(fetch=ff), 0)
+        self.assertEqual(self.store().get_item(self.SH)["status"], "failed")
+        self.assertIn("run_failures", self.notified_keys())
+        ff.content[self.SH] = b"%PDF-v1"
+        self.scan.side_effect = lambda *a, **k: iter([])
+        self.assertEqual(self.run_it(fetch=ff), 0)
+        self.assertEqual((self.root / "共享给我" / "项目群" / "方案.pdf").read_bytes(), b"%PDF-v1")
+        self.assertEqual(self.store().get_item(self.SH)["status"], "ok")
+
+    def test_link_api_error_retried_next_run_and_csv_says_retry(self):
+        seen = []
+
+        def bad(c, s, h, k, n):
+            seen.append(h.token)
+            raise ApiError(500, "boom")
+
+        pl = self.patch(perms, "process_link", side_effect=bad)
+        self.setup_sources(links=[self.link()])
+        self.run_it()
+        csv_text = (self.root / "_报告" / "2026-03-01_权限缺口.csv").read_text(encoding="utf-8-sig")
+        self.assertIn("待重试", csv_text)
+        self.assertIn(self.SH, csv_text)
+
+        def good(c, s, h, k, n):
+            seen.append(h.token)
+            s.upsert_link(h.token, status="ok")
+            return None
+
+        pl.side_effect = good
+        self.scan.side_effect = lambda *a, **k: iter([])
+        self.run_it()
+        self.assertEqual(seen, [self.SH, self.SH])
+        hit = pl.call_args.args[2]
+        self.assertEqual((hit.kind, hit.chat_name, hit.url), ("docx", "项目群", self.link().url))
+        csv_text = (self.root / "_报告" / "2026-03-01_权限缺口.csv").read_text(encoding="utf-8-sig")
+        self.assertNotIn("待重试", csv_text)
+
+    def test_shared_ok_row_refreshed_when_remote_newer(self):
+        from tests.test_sync import FakeFetch
+        local = self.root / "共享给我" / "项目群" / "方案.pdf"
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"old")
+        s = self.store()
+        s.upsert_item(token=self.SH, type="docx", source="shared", remote_dir=["共享给我", "项目群"],
+                      name="方案", remote_mtime=T1, local_path=local, status="ok")
+        mt = self.patch(chats, "fetch_mtimes", return_value={self.SH: (T1 + 3600, "方案")})
+        ff = FakeFetch()
+        ff.content[self.SH] = b"new"
+        self.setup_sources()
+        self.assertEqual(self.run_it(fetch=ff), 0)
+        self.assertEqual(mt.call_args.args[1], [(self.SH, "docx")])
+        self.assertEqual(local.read_bytes(), b"new")
+        hist = list((local.parent / "历史版本").iterdir())
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0].read_bytes(), b"old")
+        self.assertIn("## 已归档的历史版本", self.report_text())
+        self.assertEqual(s.get_item(self.SH)["remote_mtime"], T1 + 3600)
+
+    def test_shared_ok_row_not_refetched_when_unchanged(self):
+        s = self.store()
+        s.upsert_item(token=self.SH, type="docx", source="shared", remote_dir=["共享给我", "项目群"],
+                      name="方案", remote_mtime=T1, local_path=self.root / "x.pdf", status="ok")
+        self.patch(chats, "fetch_mtimes", return_value={self.SH: (T1, "方案")})
+        rec = _Recorder()
+        self.patch(sync, "sync_item", side_effect=rec)
+        self.setup_sources()
+        self.run_it()
+        self.assertEqual(rec.calls, [])
+
+    def test_walk_error_run_not_success_and_notifies(self):
+        self.patch(sync, "sync_item", side_effect=_Recorder())
+        self.setup_sources(my=[ri("m1")], wiki_error=True)
+        self.assertEqual(self.run_it(), 0)
+        self.assertIsNone(self.store().last_success())
+        self.assertEqual(self.notified_keys(), ["run_failures"])
+        self.assertIn("1 处目录没读全", self.notify.call_args.args[1])
+
+    def test_failures_notify_once_key(self):
+        self.patch(sync, "sync_item", side_effect=lambda ctx, it: Outcome.FAILED)
+        self.setup_sources(my=[ri("m1"), ri("m2")])
+        self.assertEqual(self.run_it(), 0)
+        self.assertIsNotNone(self.store().last_success())
+        self.assertEqual(self.notified_keys(), ["run_failures"])
+        self.assertIn("2 个文件失败", self.notify.call_args.args[1])
+        self.assertEqual(self.notify.call_args.kwargs["key"], "run_failures")
+
+    def test_clean_run_no_failure_notification(self):
+        self.patch(sync, "sync_item", side_effect=_Recorder())
+        self.setup_sources(my=[ri("m1")])
+        self.run_it()
+        self.notify.assert_not_called()
+
+
 class ReportTest(unittest.TestCase):
     def test_sections_in_order(self):
         r = RunReport()
