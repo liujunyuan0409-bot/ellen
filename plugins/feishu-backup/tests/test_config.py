@@ -49,6 +49,24 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.load_token(), {"access_token": "a", "expires_at": 1})
         self.assertEqual(stat.S_IMODE(os.stat(self.dir / "token.json").st_mode), 0o600)
 
+    def test_token_write_is_atomic(self):
+        # 终审 T1：写到一半崩溃（refresh token 一次性）不能把旧 token.json 写坏
+        config.save_token({"access_token": "old", "refresh_token": "r-old"})
+        real_dump = json.dump
+
+        def crash(obj, f, **kw):
+            f.write('{"access_token": "ne')
+            raise OSError("disk went away")
+        with mock.patch.object(config.json, "dump", side_effect=crash):
+            with self.assertRaises(OSError):
+                config.save_token({"access_token": "new", "refresh_token": "r-new"})
+        self.assertEqual(config.load_token(), {"access_token": "old", "refresh_token": "r-old"})
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["token.json"])  # 不留临时文件
+        config.save_token({"access_token": "new"})
+        self.assertEqual(config.load_token(), {"access_token": "new"})
+        self.assertEqual(stat.S_IMODE(os.stat(self.dir / "token.json").st_mode), 0o600)
+        self.assertIs(json.dump, real_dump)
+
 
 if __name__ == "__main__":
     unittest.main()

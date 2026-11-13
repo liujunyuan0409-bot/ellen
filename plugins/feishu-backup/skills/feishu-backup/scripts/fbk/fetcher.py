@@ -85,10 +85,15 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+# 只清程序自己产生的临时文件：.fbk-part（下载中）和 .fbk-new（待落位，含附件的 .dl-*.fbk-new）
+TEMP_SUFFIXES = (".fbk-part", ".fbk-new")
+
+
 def clean_parts(root):
     n = 0
-    for p in Path(root).rglob("*.fbk-part"):
-        if p.is_file():
-            p.unlink()
-            n += 1
+    for suffix in TEMP_SUFFIXES:
+        for p in Path(root).rglob("*" + suffix):
+            if p.name.endswith(suffix) and p.is_file() and not p.is_symlink():
+                p.unlink()
+                n += 1
     return n

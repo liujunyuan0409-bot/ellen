@@ -136,6 +136,16 @@ class FetcherTest(unittest.TestCase):
         self.assertFalse((self.root / "x.fbk-part").exists())
         self.assertTrue((self.root / "a" / "user.part").exists())  # 用户真实文件不删
 
+    def test_clean_parts_also_removes_stale_fbk_new(self):
+        # 终审 minor：程序自己的 *.fbk-new（含附件 .dl-*.fbk-new）也清掉；用户的 x.new 不碰
+        (self.root / "a").mkdir()
+        for rel in ["a/周报.pdf.doxFAK.fbk-new", "a/.dl-fkABC.fbk-new", "a/x.new", "a/x.fbk-new.pdf",
+                    "a/keep.pdf"]:
+            (self.root / rel).write_bytes(b"1")
+        self.assertEqual(fetcher.clean_parts(self.root), 2)
+        self.assertEqual(sorted(p.name for p in (self.root / "a").iterdir()),
+                         ["keep.pdf", "x.fbk-new.pdf", "x.new"])
+
 
 if __name__ == "__main__":
     unittest.main()

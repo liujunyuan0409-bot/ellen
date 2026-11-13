@@ -26,10 +26,22 @@ def _write_private(name: str, data: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(CONFIG_DIR, 0o700)
     path = CONFIG_DIR / name
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.chmod(path, 0o600)
+    # 先写同目录临时文件再 os.replace：中途崩溃不会写坏旧文件（refresh token 只能用一次）
+    tmp = CONFIG_DIR / (".%s.%d.tmp" % (name, os.getpid()))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(str(tmp), str(path))
+    except BaseException:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def load_config() -> Config:
