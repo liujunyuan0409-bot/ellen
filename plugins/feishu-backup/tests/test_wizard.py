@@ -400,13 +400,13 @@ class CliStatusTest(CliBase):
         s.finish_run(rid, True, {})
         s.close()
         (root / "_报告").mkdir()
-        (root / "_报告" / "2026-01-01_备份日志.md").write_text("x")
-        (root / "_报告" / "2026-01-02_备份日志.md").write_text("x")
+        (root / "_报告" / "2026-01-02_0900_备份日志.md").write_text("x")
+        (root / "_报告" / "2026-01-02_1430_备份日志.md").write_text("x")
         code, out = self.cli("status", "--json")
         d = json.loads(out)
         self.assertEqual(d["counts"]["items"], {"ok": 1, "failed": 1})
         self.assertIsNotNone(d["last_success"])
-        self.assertTrue(d["reports"]["log"].endswith("2026-01-02_备份日志.md"))
+        self.assertTrue(d["reports"]["log"].endswith("2026-01-02_1430_备份日志.md"))
 
 
 class CliSetupTest(CliBase):

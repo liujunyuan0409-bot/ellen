@@ -75,7 +75,8 @@ class Base(unittest.TestCase):
         return s
 
     def report_text(self):
-        return (self.root / "_报告" / "2026-03-01_备份日志.md").read_text(encoding="utf-8")
+        logs = sorted((self.root / "_报告").glob("*_备份日志.md"))
+        return logs[-1].read_text(encoding="utf-8")
 
     def notified_keys(self):
         return [c.kwargs.get("key") for c in self.notify.call_args_list]
@@ -108,7 +109,7 @@ class EndToEndTest(Base):
         self.assertEqual((self.root / "我的空间" / "周报.pdf").read_bytes(), b"%PDF-fake")
         self.assertEqual((self.root / "我的空间" / "合同.zip").read_bytes(), b"zip-bytes")
         reports = list((self.root / "_报告").glob("*_备份日志.md"))
-        self.assertEqual([p.name for p in reports], ["2026-03-01_备份日志.md"])
+        self.assertEqual([p.name for p in reports], ["2026-03-01_1000_备份日志.md"])
         self.assertTrue((self.root / "_报告" / "2026-03-01_权限缺口.csv").exists())
         text = self.report_text()
         self.assertIn("## 新增", text)
@@ -116,12 +117,13 @@ class EndToEndTest(Base):
         self.assertIsNotNone(self.store().last_success())
         self.notify.assert_not_called()
 
-    def test_same_day_rerun_overwrites_reports(self):
+    def test_same_day_rerun_keeps_both_run_reports(self):
+        # 终审 I6：同一天再跑不覆盖上一份备份日志；权限缺口 CSV 是快照，按天一份
         self.preset_drive()
         self.assertEqual(self.run_it(), 0)
-        self.assertEqual(self.run_it(), 0)
+        self.assertEqual(self.run_it(now=NOW + 3600 + 5 * 60), 0)
         self.assertEqual(sorted(p.name for p in (self.root / "_报告").iterdir()),
-                         ["2026-03-01_备份日志.md", "2026-03-01_权限缺口.csv"])
+                         ["2026-03-01_1000_备份日志.md", "2026-03-01_1105_备份日志.md", "2026-03-01_权限缺口.csv"])
 
     def test_run_cleans_stale_parts(self):
         self.preset_drive()
@@ -568,7 +570,7 @@ class FixRound2Test(_SharedBase):
         self.assertEqual(local.read_bytes(), b"new")
         hist = list((local.parent / "历史版本").iterdir())
         self.assertEqual([h.read_bytes() for h in hist], [b"old"])
-        text = (self.root / "_报告" / "2026-03-01_备份日志.md").read_text(encoding="utf-8")
+        text = (self.root / "_报告" / "2026-03-01_1100_备份日志.md").read_text(encoding="utf-8")
         self.assertIn("共享给我/项目群/方案", text.split("## 更新")[1].split("## 移动")[0])
         self.assertEqual(s.get_item(self.SH)["status"], "ok")
 

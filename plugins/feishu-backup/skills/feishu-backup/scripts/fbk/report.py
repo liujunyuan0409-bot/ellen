@@ -1,4 +1,4 @@
-"""运行报告：_报告/YYYY-MM-DD_备份日志.md。"""
+"""运行报告：_报告/YYYY-MM-DD_HHMM_备份日志.md（每次运行一份）。"""
 import threading
 from collections import Counter
 from datetime import datetime
@@ -99,5 +99,5 @@ class RunReport:
             lines += ["- %s" % e for e in self.errors]
             lines.append("")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(lines), encoding="utf-8")  # 自己的输出文件，同日重跑直接覆盖
+        path.write_text("\n".join(lines), encoding="utf-8")  # 文件名带时分，每次运行一份
         return path

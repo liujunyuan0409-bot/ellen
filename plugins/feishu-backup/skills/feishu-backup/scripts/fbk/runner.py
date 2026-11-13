@@ -340,9 +340,11 @@ def _probe(transport, token: str) -> None:
 
 
 def _report_paths(root: Path, now: int):
-    day = datetime.fromtimestamp(now, SHANGHAI).strftime("%Y-%m-%d")
+    """备份日志每次运行一份（YYYY-MM-DD_HHMM，北京时间），同日重跑不覆盖；权限缺口 CSV 是快照，按天一份。"""
+    t = datetime.fromtimestamp(now, SHANGHAI)
     d = root / REPORT_DIR
-    return d / ("%s_备份日志.md" % day), d / ("%s_权限缺口.csv" % day)
+    return (d / ("%s_备份日志.md" % t.strftime("%Y-%m-%d_%H%M")),
+            d / ("%s_权限缺口.csv" % t.strftime("%Y-%m-%d")))
 
 
 def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = None, *,
