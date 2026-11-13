@@ -28,7 +28,7 @@ def _atomic(dest, transfer):
     """transfer(part_path) 写入 .part；成功后 os.replace 到 dest；任何异常都删 .part 并重抛。"""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(dest.name + ".part")
+    part = dest.with_name(dest.name + ".fbk-part")
     try:
         transfer(part)
         os.replace(str(part), str(dest))
@@ -87,7 +87,7 @@ def sha256_file(path):
 
 def clean_parts(root):
     n = 0
-    for p in Path(root).rglob("*.part"):
+    for p in Path(root).rglob("*.fbk-part"):
         if p.is_file():
             p.unlink()
             n += 1

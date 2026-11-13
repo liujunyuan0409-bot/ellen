@@ -42,7 +42,7 @@ class FetcherTest(unittest.TestCase):
         out = fetcher.export_to(make_client(ft), "doctok", "docx", dest, sleep=sleeps.append)
         self.assertEqual(out, dest)
         self.assertEqual(dest.read_bytes(), b"PDF")
-        self.assertFalse((self.root / "sub" / "a.pdf.part").exists())
+        self.assertFalse((self.root / "sub" / "a.pdf.fbk-part").exists())
         self.assertEqual(len(sleeps), 2)
         post = [c for c in ft.calls if c["method"] == "POST"][0]
         self.assertIn(b'"file_extension": "pdf"', post["body"])
@@ -91,7 +91,7 @@ class FetcherTest(unittest.TestCase):
         with self.assertRaises(Exception):
             fetcher.download_file(make_client(ft), "tk", dest)
         self.assertFalse(dest.exists())
-        self.assertFalse((self.root / "f.bin.part").exists())
+        self.assertFalse((self.root / "f.bin.fbk-part").exists())
 
     def test_error_after_partial_write_cleans_part_and_keeps_existing_dest(self):
         dest = self.root / "f.bin"
@@ -104,7 +104,7 @@ class FetcherTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             fetcher.download_file(C(), "tk", dest)
         self.assertEqual(dest.read_bytes(), b"old")
-        self.assertFalse((self.root / "f.bin.part").exists())
+        self.assertFalse((self.root / "f.bin.fbk-part").exists())
 
     def test_success_overwrites_existing(self):
         ft = FakeTransport()
@@ -129,11 +129,11 @@ class FetcherTest(unittest.TestCase):
 
     def test_clean_parts(self):
         (self.root / "a" / "b").mkdir(parents=True)
-        for rel in ["x.part", "a/y.pdf.part", "a/b/z.part", "a/keep.pdf"]:
+        for rel in ["x.fbk-part", "a/y.pdf.fbk-part", "a/b/z.fbk-part", "a/keep.pdf"]:
             (self.root / rel).write_bytes(b"1")
         self.assertEqual(fetcher.clean_parts(self.root), 3)
         self.assertTrue((self.root / "a" / "keep.pdf").exists())
-        self.assertFalse((self.root / "x.part").exists())
+        self.assertFalse((self.root / "x.fbk-part").exists())
 
 
 if __name__ == "__main__":
