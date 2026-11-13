@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>飞书备份设计</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;900&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: archival spec sheet — left rail TOC on desktop, single reading column; folder-tab section labels */
+:root{
+  --bg:#f6f7f5; --paper:#ffffff; --ink:#1d2421; --muted:#5d6a64; --line:#dde3df;
+  --accent:#1f6f5c; --accent-soft:#e3f0eb; --warn:#9a5b00; --warn-soft:#fbf0dc;
+  --bad:#a33a2c; --bad-soft:#f8e4e0; --code-bg:#eef2ef;
+  --f-display:"Noto Serif SC","Songti SC",serif;
+  --f-body:"Noto Sans SC","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#121614; --paper:#1a201d; --ink:#e4ebe7; --muted:#9aa8a1; --line:#2c3531;
+  --accent:#62c3a6; --accent-soft:#1d3a31; --warn:#e3b064; --warn-soft:#3a2d17;
+  --bad:#ec8a7c; --bad-soft:#3d221e; --code-bg:#202925; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#121614; --paper:#1a201d; --ink:#e4ebe7; --muted:#9aa8a1; --line:#2c3531;
+  --accent:#62c3a6; --accent-soft:#1d3a31; --warn:#e3b064; --warn-soft:#3a2d17;
+  --bad:#ec8a7c; --bad-soft:#3d221e; --code-bg:#202925; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15.5px;line-height:1.75;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:32px 64px}
+.wrap{max-width:1120px;margin:0 auto;display:grid;grid-template-columns:220px minmax(0,1fr);gap:48px;align-items:start}
+nav.toc{position:sticky;top:calc(env(safe-area-inset-top,0px) + 24px);font-size:13.5px}
+nav.toc .k{font-family:var(--f-mono);font-size:11px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;margin-bottom:10px}
+nav.toc ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;border-left:1px solid var(--line)}
+nav.toc a{display:block;padding:4px 0 4px 14px;color:var(--muted);text-decoration:none;margin-left:-1px;border-left:2px solid transparent}
+nav.toc a:hover,nav.toc a:focus-visible{color:var(--accent);border-left-color:var(--accent);outline:none}
+main{min-width:0}
+header.top{padding-bottom:28px;border-bottom:1px solid var(--line);margin-bottom:8px}
+.meta{font-family:var(--f-mono);font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 18px}
+.meta b{color:var(--ink);font-weight:500}
+h1{font-family:var(--f-display);font-weight:900;font-size:clamp(28px,4.4vw,40px);line-height:1.25;margin:14px 0 12px;text-wrap:balance}
+.lede{color:var(--muted);max-width:62ch;margin:0}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;padding:2px 10px;border-radius:999px;background:var(--warn-soft);color:var(--warn);font-weight:500}
+section{padding-top:40px;scroll-margin-top:16px}
+.tab{display:inline-block;font-family:var(--f-mono);font-size:11.5px;letter-spacing:.08em;color:var(--accent);background:var(--accent-soft);padding:2px 10px;border-radius:4px 4px 0 0}
+h2{font-family:var(--f-display);font-weight:600;font-size:24px;line-height:1.35;margin:0 0 14px;padding-top:8px;border-top:2px solid var(--accent);text-wrap:balance}
+h3{font-size:16.5px;font-weight:700;margin:28px 0 8px}
+p,li{max-width:68ch}
+ul,ol{padding-left:1.3em}
+li{margin:4px 0}
+code{font-family:var(--f-mono);font-size:.86em;background:var(--code-bg);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+strong{font-weight:700}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:8px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:16px 18px;min-width:0}
+.card h4{margin:0 0 6px;font-size:13px;letter-spacing:.06em;font-family:var(--f-mono);font-weight:500}
+.card ul{margin:0;padding-left:1.1em;font-size:14px}
+.card.goal h4{color:var(--accent)} .card.non h4{color:var(--muted)} .card.anti{border-color:var(--bad)} .card.anti h4{color:var(--bad)}
+.tablewrap{overflow-x:auto;margin:12px 0;border:1px solid var(--line);border-radius:8px;background:var(--paper)}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+th{font-weight:500;color:var(--muted);font-size:12.5px;background:var(--code-bg)}
+td:first-child{white-space:nowrap;font-weight:500}
+.num{font-variant-numeric:tabular-nums}
+.ok{color:var(--accent);font-weight:700} .no{color:var(--bad);font-weight:700}
+.pill{display:inline-block;font-size:12px;padding:0 8px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-weight:500;white-space:nowrap}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.callout{border-left:3px solid var(--warn);background:var(--warn-soft);padding:12px 16px;border-radius:0 6px 6px 0;margin:16px 0;max-width:72ch}
+.callout.info{border-left-color:var(--accent);background:var(--accent-soft)}
+.callout p{margin:0}
+.big{display:flex;flex-wrap:wrap;gap:12px 32px;margin:16px 0}
+.big div{min-width:0}
+.big .n{font-family:var(--f-display);font-weight:900;font-size:30px;line-height:1.1;font-variant-numeric:tabular-nums}
+.big .l{font-size:12.5px;color:var(--muted)}
+.steps{list-style:none;padding:0;margin:14px 0;display:grid;gap:10px;counter-reset:s}
+.steps li{max-width:none;display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.steps .no-{font-family:var(--f-mono);font-size:12px;color:var(--accent);padding-top:3px}
+.steps b{display:block}
+.steps .t{font-size:14px;color:var(--muted)}
+.steps .fail{font-size:13.5px;color:var(--bad)}
+pre.tree{font-family:var(--f-mono);font-size:13px;line-height:1.6;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:16px 18px;overflow-x:auto;margin:12px 0}
+pre.tree .c{color:var(--muted)}
+pre.tree .h{color:var(--accent)}
+.confirm{list-style:none;padding:0;display:grid;gap:6px}
+.confirm li::before{content:"✓";color:var(--accent);font-weight:700;margin-right:10px}
+footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+@media (max-width:860px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:8px}
+  nav.toc{position:static}
+  nav.toc ol{display:flex;flex-wrap:wrap;border-left:0;gap:4px 6px}
+  nav.toc a{border:1px solid var(--line);border-radius:999px;padding:2px 10px;margin:0}
+  .grid3{grid-template-columns:minmax(0,1fr)}
+}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <div class="k">目录</div>
+  <ol>
+    <li><a href="#why">1 为什么做</a></li>
+    <li><a href="#goals">2 目标与边界</a></li>
+    <li><a href="#facts">3 实测结果</a></li>
+    <li><a href="#approach">4 方案选择</a></li>
+    <li><a href="#ux">5 用起来的样子</a></li>
+    <li><a href="#detail">6 设计细节</a></li>
+    <li><a href="#builder">7 留给开发时确认</a></li>
+    <li><a href="#confirmed">8 已确认</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="top">
+  <div class="meta"><span>日期 <b>2026-11-13</b></span><span>插件 <b>plugins/feishu-backup/</b></span><span>平台 <b>macOS</b></span></div>
+  <h1>飞书文件自动备份 skill</h1>
+  <p class="lede">把企业飞书里能看到的文件定期备份到另一台 Mac，改过的文件自动拉新版、旧版按日期归档，并列出打不开的文件。</p>
+  <p style="margin:14px 0 0"><span class="status">草稿 · 待审阅</span></p>
+</header>
+
+<section id="why">
+  <span class="tab">§1</span>
+  <h2>为什么做、给谁用</h2>
+  <p>一个企业飞书账号（下称<strong>备份账号</strong>）下有几千份云文档和上传文件，分散在「我的空间」、知识库和群聊里。需要做到：</p>
+  <ol>
+    <li>把这些文件<strong>自动、定期</strong>备份到本地；</li>
+    <li>文件在飞书上被改过，本地自动拉新版，<strong>旧版不删</strong>，按日期归档到同目录的「历史版本」文件夹；</li>
+    <li>在线文档优先存 PDF，上传的原始资料保留原格式；</li>
+    <li>查出备份账号打不开的文件，列出数量和能拿到的名字线索。</li>
+  </ol>
+  <h3>关于「企业所有文件」</h3>
+  <p>飞书里每个成员的「我的空间」是私有的，超级管理员也无法通过接口或网页读取别人没分享的文件。选定的覆盖策略：</p>
+  <ul>
+    <li><strong>以共享位置为主</strong>：公司工作文件统一放到备份账号能看到的知识库或共享文件夹。这是团队规范，需要人推动，程序负责备份备份账号能看到的一切。</li>
+    <li><strong>不做</strong>每个员工各自授权（会触及员工私人空间）。</li>
+    <li><strong>不做</strong>付费版审计（只能列清单、拿不到内容，免费版也不可用）。</li>
+    <li>权限缺口报告（§6.8）用来找出还散落在别人私人空间、但在群里出现过的文件，作为推动收拢的依据。</li>
+  </ul>
+  <div class="callout info"><p>运行环境：<strong>另一台 Mac，不常开机</strong>。以 Claude Code 插件分发，装好后按向导配置；日常由系统定时任务运行，不需要开着 Claude Code。</p></div>
+</section>
+
+<section id="goals">
+  <span class="tab">§2</span>
+  <h2>目标与边界</h2>
+  <div class="grid3">
+    <div class="card goal"><h4>目标</h4><ul>
+      <li>首次配置有向导：逐步指引，每步实测飞书接口，失败给出修复方法</li>
+      <li>首次配置时询问备份目录</li>
+      <li>增量备份，中断后可续跑</li>
+      <li>开机或唤醒后自动判断是否该补跑</li>
+      <li>每次运行出一份能读的报告</li>
+      <li>权限缺口清单</li>
+    </ul></div>
+    <div class="card non"><h4>不做</h4><ul>
+      <li>全企业空间盘点（免费版没有审计日志接口）</li>
+      <li>Windows / Linux</li>
+      <li>双向同步、往飞书回写</li>
+      <li>聊天文字、日历、邮件（群里的附件要备份）</li>
+      <li>读取别人私人空间里没分享的文件</li>
+    </ul></div>
+    <div class="card anti"><h4>做了就算失败</h4><ul>
+      <li>删除或覆盖本地任何旧版本</li>
+      <li>对飞书做任何写操作</li>
+      <li>把密钥、令牌、清单、备份文件推进 git 仓库</li>
+      <li>静默失败：令牌过期、盘没插、接口报错时没人知道</li>
+    </ul></div>
+  </div>
+</section>
+
+<section id="facts">
+  <span class="tab">§3</span>
+  <h2>实测结果</h2>
+  <p>2026-11-13 用备份账号实际调用接口得到，体积只统计、未下载。</p>
+  <div class="big">
+    <div><div class="n">5,746</div><div class="l">我的空间 + 知识库 文件数</div></div>
+    <div><div class="n">46.4 GB</div><div class="l">上传文件，3,542 个（精确）</div></div>
+    <div><div class="n">≈ 47–50 GB</div><div class="l">首次合计，不含群聊附件</div></div>
+    <div><div class="n">318</div><div class="l">备份账号所在群（36 个外部群）</div></div>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>项</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>我的空间</td><td class="num">5,436 个文件 / 412 个文件夹：文档 1,382、表格 361、多维表格 27、幻灯片 2、思维笔记 14、快捷方式 125、上传文件 3,525。5,318 个归备份账号所有，都有最后修改时间</td></tr>
+      <tr><td>知识库</td><td class="num">12 个空间、310 个节点</td></tr>
+      <tr><td>导出</td><td><span class="ok">✓</span> 文档→PDF　<span class="ok">✓</span> 表格→xlsx　<span class="ok">✓</span> 多维表格→xlsx　<span class="ok">✓</span> 幻灯片→PDF（单份可达 40–67 MB）</td></tr>
+      <tr><td>上传文件下载</td><td><span class="ok">✓</span> 原格式</td></tr>
+      <tr><td>判断能否打开</td><td><span class="ok">✓</span> 权限判断接口可用</td></tr>
+      <tr><td>打不开的文件</td><td>飞书<strong>不返回标题和所有者</strong>，名字只能从群消息上下文推断</td></tr>
+      <tr><td>群消息</td><td class="num"><span class="ok">✓</span> 用备份账号本人身份读取，机器人不用进群。抽 30 个群 × 50 条 = 874 条消息，找到 53 个文档链接：1 个无权限，5 个已删除或无效</td></tr>
+      <tr><td>搜索</td><td><span class="ok">✓</span> 能发现部分「共享给我」的文档</td></tr>
+      <tr><td>审计日志</td><td><span class="no">✗</span> 免费版不可用</td></tr>
+    </tbody>
+  </table></div>
+  <h3>上传文件体积分布</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>类型</th><th class="num">体积</th><th class="num">个数</th></tr></thead>
+    <tbody class="num">
+      <tr><td>mov 视频</td><td>20.0 GB</td><td>222</td></tr>
+      <tr><td>psd 设计稿</td><td>14.1 GB</td><td>196</td></tr>
+      <tr><td>pdf</td><td>3.8 GB</td><td>418</td></tr>
+      <tr><td>key 幻灯片</td><td>2.0 GB</td><td>78</td></tr>
+      <tr><td>ai 设计稿</td><td>1.8 GB</td><td>250</td></tr>
+      <tr><td>jpg / png</td><td>2.0 GB</td><td>1,610</td></tr>
+      <tr><td>在线文档导出（估）</td><td>≈ 1 GB</td><td>2,064</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><p>建议备份盘至少留 <strong>100 GB</strong>（首次体积 × 1.5，另加群聊附件）。单个最大文件 997 MB，文件夹最深 9 层。</p></div>
+  <p>飞书应用侧已就绪：企业自建应用，免审，可用范围只有备份账号，机器人能力已开（读群消息必需），本地登录回调地址已配置。</p>
+</section>
+
+<section id="approach">
+  <span class="tab">§4</span>
+  <h2>方案选择</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>方案</th><th>做法</th><th>取舍</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill">选定</span> A. Python 单脚本 + 系统定时</td><td>一个 <code>fbk.py</code>，只用 Python 标准库直接调飞书接口；macOS 定时任务触发</td><td>新 Mac 只要有 python3，不用装任何依赖；导出、续跑、限流全部可控</td></tr>
+      <tr><td>B. 基于 lark-cli</td><td>复用现有命令行工具</td><td>本机那份是公司内部版本，新 Mac 装不到；一次只能挂一个应用</td></tr>
+      <tr><td>C. 飞书官方开源 CLI</td><td>依赖 Node + 官方 CLI</td><td>多一套运行环境；导出、下载、增量逻辑还得自己写</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="ux">
+  <span class="tab">§5</span>
+  <h2>用起来的样子</h2>
+  <h3>安装与首次配置向导</h3>
+  <p>在新 Mac 上安装插件后，对 Claude 说「配置飞书备份」。向导共 7 步，<strong>每步都实测，失败就停在这一步并告诉你怎么修</strong>。</p>
+  <ol class="steps">
+    <li><span class="no-">1/7</span><div><b>环境检查</b><span class="t">python3 版本够不够，网络能不能连到飞书</span></div></li>
+    <li><span class="no-">2/7</span><div><b>应用凭证</b><span class="t">输入 App ID 和 App Secret，附带去开发者后台哪里找。实测能否换到应用令牌</span><div class="fail">常见失败：Secret 填错、应用被停用 → 给出后台链接和检查项</div></div></li>
+    <li><span class="no-">3/7</span><div><b>登录授权</b><span class="t">自动打开浏览器，用备份账号点「授权」。实测读取用户信息，显示「已登录：姓名」</span><div class="fail">常见失败：回调地址没配、端口被占、缺权限 → 列出缺哪几项</div></div></li>
+    <li><span class="no-">4/7</span><div><b>权限体检</b><span class="t">逐项实测：列我的空间、列知识库、搜索、导出一份文档、下载一个文件的 1 字节、权限判断、列群、读一条群消息。每项打 ✓ 或 ✗，✗ 写明原因和修法</span></div></li>
+    <li><span class="no-">5/7</span><div><b>备份目录</b><span class="t">询问放在哪里（建议外接盘或 ~/飞书备份）。检查能否写入、剩余空间够不够、是否在 iCloud 同步目录里</span></div></li>
+    <li><span class="no-">6/7</span><div><b>首次扫描</b><span class="t">只统计不下载：文件数、类型分布、预估体积和耗时。确认后才开始首次全量</span></div></li>
+    <li><span class="no-">7/7</span><div><b>定时任务</b><span class="t">安装系统定时任务，显示下次检查时间和卸载方法</span></div></li>
+  </ol>
+  <p>向导可以重复运行，只重做失败或指定的步骤。日常排障单独跑第 4 步体检即可（<code>fbk.py doctor</code>）。</p>
+
+  <h3>本地目录结构</h3>
+<pre class="tree">&lt;备份根目录&gt;/
+├── <span class="h">我的空间/</span>
+│   └── 市场部/
+│       ├── 2026 预算.xlsx
+│       ├── 品牌手册.pdf
+│       ├── 合同扫描件.zip
+│       └── <span class="h">历史版本/</span>
+│           ├── 2026 预算_2026-10-02_1530.xlsx
+│           └── 品牌手册_2026-09-18_0912.pdf
+├── <span class="h">知识库/</span>
+│   └── &lt;空间名&gt;/&lt;节点路径&gt;/...
+├── <span class="h">共享给我/</span>          <span class="c">← 群聊或搜索发现、能打开、但不在上面两处的文件</span>
+├── <span class="h">群聊附件/</span>
+│   └── &lt;群名&gt;/2026-11-13_报价单.xlsx
+├── <span class="h">_报告/</span>
+│   ├── 2026-11-14_备份日志.md
+│   └── 2026-11-14_权限缺口.csv
+└── .feishu-backup/    <span class="c">← 清单与状态，随备份目录走，换电脑可整体拷走</span></pre>
+
+  <h3>日常</h3>
+  <ul>
+    <li>不需要人管。出错或需要重新登录时，弹 Mac 系统通知。</li>
+    <li>说「飞书备份状态」：上次成功时间、进度、失败清单。</li>
+    <li>说「现在备份一次」：立即运行。</li>
+    <li>说「看权限缺口」：打开最新的缺口清单并总结。</li>
+  </ul>
+</section>
+
+<section id="detail">
+  <span class="tab">§6</span>
+  <h2>设计细节</h2>
+
+  <h3>6.1 组件</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>文件</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>SKILL.md</code></td><td>告诉 Claude 何时触发、怎么走向导、怎么解读报告和排障</td></tr>
+      <tr><td><code>scripts/fbk.py</code></td><td>唯一程序入口：<code>setup</code> <code>doctor</code> <code>login</code> <code>scan</code> <code>run</code> <code>status</code> <code>perms</code> <code>schedule</code></td></tr>
+      <tr><td><code>tests/</code></td><td>本地测试：命名、路径冲突、版本归档、只读白名单，不调真接口</td></tr>
+      <tr><td><code>README.md</code></td><td>安装、飞书后台前置配置、换电脑步骤</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>6.2 配置与凭证（只在本机，不进仓库）</h3>
+  <ul>
+    <li><code>~/.config/feishu-backup/config.json</code>：App ID、Secret、备份目录、备份间隔（默认 24 小时）。仅本人可读。</li>
+    <li><code>~/.config/feishu-backup/token.json</code>：登录令牌，2 小时有效，自动续期。</li>
+    <li>日志在 <code>~/Library/Logs/feishu-backup/</code>，保留 30 天。</li>
+    <li>换电脑：在新 Mac 跑一遍向导；也可以从旧 Mac 拷配置文件，省掉第 2 步。</li>
+  </ul>
+
+  <h3>6.3 调度（Mac 不常开机）</h3>
+  <ul>
+    <li>系统定时任务每小时醒一次，程序自己判断要不要跑：
+      <ul>
+        <li>距上次成功不到 24 小时 → 退出</li>
+        <li>备份盘没插 → 记日志，每天最多提醒一次</li>
+        <li>没网 → 下个小时再试</li>
+        <li>已经有一个在跑 → 退出</li>
+      </ul>
+    </li>
+    <li>首次全量可能跨好几次开机：每完成一个文件就记一笔，下次从断点继续。</li>
+    <li>合盖睡眠打断下载：先写临时文件，下完才改名，不会留下半截文件。</li>
+  </ul>
+
+  <h3>6.4 备份范围</h3>
+  <ol>
+    <li><strong>我的空间</strong>：从根目录逐层往下。</li>
+    <li><strong>知识库</strong>：备份账号能看到的所有空间。带子页面的文档存成 <code>标题.pdf</code>，子页面放进同名文件夹。</li>
+    <li><strong>快捷方式</strong>：找到它指向的文件；已经在 1、2 里的跳过，否则存在快捷方式所在位置。</li>
+    <li><strong>共享给我</strong>：群里或搜索发现的、能打开但不在 1–3 里的文档，存到 <code>共享给我/&lt;群名&gt;/</code>，搜索发现的放 <code>共享给我/_搜索发现/</code>。</li>
+    <li><strong>群聊附件</strong>：所有群里的文件和音视频附件，原格式存到 <code>群聊附件/&lt;群名&gt;/</code>，文件名 <code>日期_原文件名</code>。<strong>图片不备份</strong>。</li>
+  </ol>
+
+  <h3>6.4.1 去重</h3>
+  <ul>
+    <li><strong>同一个文件出现在多处</strong>（快捷方式、多个群转发同一个链接）：只存一份，按 我的空间 › 知识库 › 共享给我 的顺序存在第一个位置，其他位置只记录「另见」。</li>
+    <li><strong>群聊附件按内容判断</strong>：内容完全相同的只存一份。</li>
+    <li><strong>是否有改动</strong>：上传文件和附件比较内容，完全相同就不归档、不覆盖；在线文档看飞书的最后修改时间（同一文档每次导出的 PDF 字节可能不同，逐字节比较不可靠）。</li>
+  </ul>
+
+  <h3>6.5 格式规则</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>飞书类型</th><th>存成</th></tr></thead>
+    <tbody>
+      <tr><td>文档（新版、旧版）</td><td>PDF</td></tr>
+      <tr><td>幻灯片</td><td>PDF</td></tr>
+      <tr><td>电子表格</td><td>xlsx（飞书不支持表格导 PDF）</td></tr>
+      <tr><td>多维表格</td><td>xlsx</td></tr>
+      <tr><td>上传的文件、群聊附件</td><td>原文件原格式，不转换</td></tr>
+      <tr><td>思维笔记等</td><td>没有导出接口就跳过，报告里列出</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>6.6 增量与历史版本</h3>
+  <ul>
+    <li><strong>新文件</strong>：下载或导出到对应位置。</li>
+    <li><strong>飞书上改过</strong>：先把本地当前版移到同目录 <code>历史版本/</code>，改名为 <code>原名_YYYY-MM-DD_HHMM.扩展名</code>（时间取旧版在飞书上的修改时间，北京时间），再下载新版到原位置。</li>
+    <li><strong>飞书上改名或移动</strong>：本地跟着改名、移动，历史版本一起搬，不算新版本。</li>
+    <li><strong>飞书上删了，或备份账号没权限了</strong>：<strong>本地一律不删</strong>，在报告里标出。</li>
+    <li><strong>文件名</strong>：非法字符换成 <code>_</code>；同目录重名时加上编号后缀；过长截断，保留扩展名。</li>
+  </ul>
+  <div class="callout info"><p><strong>版本粒度</strong>：版本是每次备份时的快照。两次备份之间改了好几次，只留最后一版。飞书自带的版本记录只含手动保存的版本，靠不上。想要更密，把间隔调短即可。</p></div>
+  <div class="callout info"><p><strong>空间不足</strong>：每个文件写入前检查剩余空间，不够就中止这次备份并弹通知，下次从断点续跑。历史版本不设数量上限。</p></div>
+
+  <h3>6.7 只读保护</h3>
+  <p>应用开了读写权限，但程序内置白名单，只允许读取类请求：查询、下载、导出、搜索、查元数据、登录续期。其他任何请求在发出前就被拦下，并有测试覆盖。</p>
+
+  <h3>6.8 权限缺口报告</h3>
+  <ul>
+    <li>每次运行扫描所有群的新消息（记住每个群扫到哪里）；首次往回扫 180 天。</li>
+    <li>找出所有飞书文档链接，逐个判断：<span class="pill">能打开</span> <span class="pill bad">无权限</span> <span class="pill bad">已删除或无效</span></li>
+    <li>输出 <code>_报告/日期_权限缺口.csv</code>，Excel 直接打开。列：状态、类型、链接、文件名线索（消息里的标题）、分享人、群名、分享时间、首次发现日期。</li>
+    <li>顶部汇总：共发现多少链接，无权限多少，已删除多少。</li>
+    <li>报告里写明局限：只能发现出现在备份账号所在群里、或者能搜到的文件。</li>
+  </ul>
+
+  <h3>6.9 运行报告</h3>
+  <p><code>_报告/日期_备份日志.md</code>：耗时，新增、更新、改名、失败、跳过各多少；失败和跳过逐条写原因；列出归档了哪些历史版本。</p>
+
+  <h3>6.10 限流与重试</h3>
+  <ul>
+    <li>每秒最多 5 次请求；导出同时最多 3 个，下载同时最多 4 个。</li>
+    <li>飞书限流或出错时自动重试 5 次；单个文件失败不影响其他文件，下次再试。</li>
+    <li>登录失效：停止并弹通知「需要重新登录，对 Claude 说『飞书备份重新登录』」。</li>
+  </ul>
+</section>
+
+<section id="builder">
+  <span class="tab">§7</span>
+  <h2>留给开发时确认</h2>
+  <ul>
+    <li>思维笔记有没有导出接口，没有就跳过。</li>
+    <li>登录续期令牌能撑多久不开机，向导里如实告知。</li>
+    <li>搜索接口能覆盖多少「共享给我」的文件。</li>
+    <li>群消息里文档卡片的标题在哪个字段，用于文件名线索。</li>
+    <li>过期或撤回附件的报错如何归类。</li>
+    <li>群聊附件首次体积，向导第 6 步单独估算。</li>
+    <li>首次全量的耗时估算。</li>
+  </ul>
+</section>
+
+<section id="confirmed">
+  <span class="tab">§8</span>
+  <h2>已确认</h2>
+  <ul class="confirm">
+    <li>在线文档存 PDF，表格存 xlsx，上传文件和附件保留原格式</li>
+    <li>每 24 小时备份一次，版本是每次备份时的快照</li>
+    <li>「共享给我」的文件一起备份</li>
+    <li>群聊附件备份到 <code>群聊附件/&lt;群名&gt;/</code>，只要文件和音视频，不要图片</li>
+    <li>完全相同的文件不重复保存</li>
+    <li>企业覆盖靠「共享位置为主」，不做员工逐个授权</li>
+  </ul>
+</section>
+
+<footer>2026-11-13 · 设计草稿，评审通过后进入实施计划</footer>
+</main>
+</div>
+</body>
+</html>
