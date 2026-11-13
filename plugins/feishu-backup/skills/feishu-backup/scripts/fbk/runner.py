@@ -131,6 +131,9 @@ class _Run:
         self.submitted = 0
         self.walked = set()
         self.walk_errors = []
+        self.file_fail_ids = set()  # 失败的文件：drive/共享项 token、附件 file_key
+        self.other_fail_ids = set()  # 失败的链接检查
+        self._ids_lock = threading.Lock()
 
     def _sync_one(self, item):
         self.reasons.clear()
@@ -138,6 +141,8 @@ class _Run:
         reason = ""
         if outcome == Outcome.FAILED:
             reason = self.reasons.take() or "未知原因，见日志"
+            with self._ids_lock:
+                self.file_fail_ids.add("item:" + item.token)
         elif outcome == Outcome.SKIPPED:
             reason = "类型 %s 不支持导出" % item.type
         self.report.add(outcome, _item_path(item), reason)
@@ -204,6 +209,9 @@ class _Run:
             log.warning("附件保存失败：%s（%s）", _att_path(hit), e)
             outcome = Outcome.FAILED
         reason = (self.reasons.take() or "未知原因，见日志") if outcome == Outcome.FAILED else ""
+        if outcome == Outcome.FAILED:
+            with self._ids_lock:
+                self.file_fail_ids.add("att:" + hit.file_key)
         self.report.add(outcome, _att_path(hit), reason)
 
     # ---- 阶段 3：共享给我 ----
@@ -221,14 +229,20 @@ class _Run:
 
     def _pending_shared(self):
         """上轮没完成的共享文件（status=failed）+ 已备份但云端有更新的共享文件。"""
-        out = [self._item_from_row(r) for r in self._shared_rows("failed")]
+        failed = self._shared_rows("failed")
+        # 有本地文件的 failed 行多半是「更新失败」：要用云端最新 mtime，否则会被当成没变
+        refresh_failed = [r for r in failed if r["local_path"]]
         ok_rows = self._shared_rows("ok")
-        if ok_rows:
-            mt = chats.fetch_mtimes(self.client, [(r["token"], r["type"]) for r in ok_rows])
-            for r in ok_rows:
-                remote = mt.get(r["token"], (0, ""))[0]
-                if remote > (r["remote_mtime"] or 0):
-                    out.append(self._item_from_row(r, remote))
+        ask = ok_rows + refresh_failed
+        mt = chats.fetch_mtimes(self.client, [(r["token"], r["type"]) for r in ask]) if ask else {}
+        out = []
+        for r in failed:
+            remote = mt.get(r["token"], (0, ""))[0] if r["local_path"] else 0
+            out.append(self._item_from_row(r, max(remote, r["remote_mtime"] or 0)))
+        for r in ok_rows:
+            remote = mt.get(r["token"], (0, ""))[0]
+            if remote > (r["remote_mtime"] or 0):
+                out.append(self._item_from_row(r, remote))
         return out
 
     def _remember(self, item):
@@ -246,6 +260,8 @@ class _Run:
             self.store.upsert_link(hit.token, kind=hit.kind, status="retry", hint=hit.hint, sender=hit.sender,
                                    chat_name=hit.chat_name, sent_at=hit.sent_at, first_seen=int(self.now),
                                    url=hit.url)
+            with self._ids_lock:
+                self.other_fail_ids.add("link:" + hit.token)
             self.report.add(Outcome.FAILED, "链接 %s %s" % (hit.chat_name, hit.url or hit.token),
                             "无法判断权限（下轮重试）：%s" % e)
             return
@@ -288,6 +304,18 @@ class _Run:
                 seen.add(item.token)
                 uniq.append(item)
         self.phase(uniq, counted=False)
+
+
+def _notify_failures(r) -> None:
+    """失败集合（文件、附件、链接、没读全的目录）和上次通知时一样就不再通知，避免天天提醒同一批。"""
+    walk_ids = {"walk:" + "/".join(e.rel_dir) for e in r.walk_errors}
+    ids = r.file_fail_ids | r.other_fail_ids | walk_ids
+    if not (r.file_fail_ids or walk_ids):
+        ids = set()  # 只有链接检查失败不发通知（CSV 里已标「待重试」）
+    msg = "飞书备份有 %d 个文件失败" % len(r.file_fail_ids)
+    if r.walk_errors:
+        msg += "、%d 处目录没读全" % len(r.walk_errors)
+    notify.notify_if_changed(TITLE, msg + "，详见 _报告", "run_failures", ids, now=r.now)
 
 
 def _probe(transport, token: str) -> None:
@@ -366,12 +394,7 @@ def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> i
         # 遍历不完整也不算成功：下个小时醒来再跑（设计 §6.3）
         store.finish_run(run_id, ok=limit is None and not r.walk_errors, summary=summary)
         log.info("本轮完成：%s", summary)
-        failed = report.counts[Outcome.FAILED]
-        if failed or r.walk_errors:
-            msg = "飞书备份有 %d 个文件失败" % failed
-            if r.walk_errors:
-                msg += "、%d 处目录没读全" % len(r.walk_errors)
-            notify.notify(TITLE, msg + "，详见 _报告", key="run_failures")
+        _notify_failures(r)
         return 0
     except (_Offline, auth.NetworkError) as e:
         log.info("网络不通，本轮跳过：%s", e)

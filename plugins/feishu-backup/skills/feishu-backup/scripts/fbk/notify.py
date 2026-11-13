@@ -1,4 +1,5 @@
 """macOS 系统通知（osascript），带按 key 的每日节流。尽力而为：任何失败都吞掉。"""
+import hashlib
 import json
 import logging
 import subprocess
@@ -34,6 +35,29 @@ def _save_state(state: dict) -> None:
         (config.CONFIG_DIR / STATE_FILE).write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     except OSError as e:
         log.warning("通知节流状态写入失败：%s", e)
+
+
+def notify_if_changed(title: str, message: str, key: str, ids, now: Optional[int] = None) -> bool:
+    """只在「失败集合」与上次通知时不同才通知（同时仍受 key 每日一次限制）。
+    ids 为空时清掉记录，下次再出现同样的失败也会重新通知。"""
+    fp_key = key + "_set"
+    ids = sorted(set(ids))
+    state = _load_state()
+    if not ids:
+        if fp_key in state:
+            del state[fp_key]
+            _save_state(state)
+        return False
+    fp = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
+    if state.get(fp_key) == fp:
+        log.info("失败集合与上次通知相同，不再通知：%s", key)
+        return False
+    if not notify(title, message, key=key, now=now):
+        return False
+    state = _load_state()  # notify 可能刚写过节流日期
+    state[fp_key] = fp
+    _save_state(state)
+    return True
 
 
 def notify(title: str, message: str, key: Optional[str] = None, now: Optional[int] = None) -> bool:

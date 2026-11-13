@@ -64,5 +64,29 @@ class NotifyTest(unittest.TestCase):
         self.assertTrue(notify.notify("t", "m", key="k", now=DAY1))
 
 
+class NotifyIfChangedTest(NotifyTest):
+    def test_same_set_next_day_not_notified_new_set_is(self):
+        self.assertTrue(notify.notify_if_changed("t", "m", "run_failures", ["item:a", "att:b"], now=DAY1))
+        self.assertFalse(notify.notify_if_changed("t", "m", "run_failures", ["att:b", "item:a"], now=DAY2))
+        self.assertTrue(notify.notify_if_changed("t", "m", "run_failures", ["item:a", "att:b", "item:c"],
+                                                 now=DAY2 + 86400))
+        self.assertEqual(len(self.scripts()), 2)
+        state = json.loads((config.CONFIG_DIR / "notify_state.json").read_text())
+        self.assertEqual(len(state["run_failures_set"]), 64)
+
+    def test_daily_throttle_still_applies(self):
+        notify.notify_if_changed("t", "m", "run_failures", ["item:a"], now=DAY1)
+        self.assertFalse(notify.notify_if_changed("t", "m", "run_failures", ["item:b"], now=DAY1_LATER))
+        self.assertEqual(len(self.scripts()), 1)
+        # 被节流的那次没记指纹：第二天同一集合仍会通知
+        self.assertTrue(notify.notify_if_changed("t", "m", "run_failures", ["item:b"], now=DAY2))
+
+    def test_empty_set_clears_fingerprint(self):
+        notify.notify_if_changed("t", "m", "run_failures", ["item:a"], now=DAY1)
+        self.assertFalse(notify.notify_if_changed("t", "m", "run_failures", [], now=DAY2))
+        self.assertTrue(notify.notify_if_changed("t", "m", "run_failures", ["item:a"], now=DAY2 + 86400))
+        self.assertEqual(len(self.scripts()), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

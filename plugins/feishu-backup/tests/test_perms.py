@@ -74,11 +74,11 @@ class ReportTest(unittest.TestCase):
                           sent_at=1763020800, first_seen=1763020800, url="u")
             out = root / "_报告" / "perm.csv"
             res = perms.write_report(s, out)
-            self.assertEqual(res, {"total": 3, "denied": 1, "gone": 1})
+            self.assertEqual(res, {"total": 3, "denied": 1, "gone": 1, "retry": 0})
             raw = out.read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
             lines = raw.decode("utf-8-sig").splitlines()
-            self.assertEqual(lines[0], "# 共发现 3 个链接，无权限 1 个，已删除或无效 1 个")
+            self.assertEqual(lines[0], "# 共发现 3 个链接，无权限 1 个，已删除或无效 1 个，待重试 0 个")
             self.assertTrue(lines[1].startswith("# 局限："))
             self.assertEqual(lines[2], "状态,类型,链接,文件名线索,分享人,群名,分享时间,首次发现日期")
             rows = list(csv.reader(lines[3:]))

@@ -67,12 +67,14 @@ def write_report(store, path: Path) -> dict:
     rows = list(store.links())
     denied = sum(1 for r in rows if r["status"] == "denied")
     gone = sum(1 for r in rows if r["status"] == "gone")
+    retry = sum(1 for r in rows if r["status"] == "retry")
     order = {"denied": 0, "gone": 1, "retry": 2, "ok": 3}
     rows.sort(key=lambda r: (order.get(r["status"], 4), r["token"]))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(str(path), "w", encoding="utf-8-sig", newline="") as f:
-        f.write("# 共发现 %d 个链接，无权限 %d 个，已删除或无效 %d 个\r\n" % (len(rows), denied, gone))
+        f.write("# 共发现 %d 个链接，无权限 %d 个，已删除或无效 %d 个，待重试 %d 个\r\n"
+                % (len(rows), denied, gone, retry))
         f.write(_LIMIT + "\r\n")
         w = csv.writer(f)
         w.writerow(_HEADER)
@@ -81,4 +83,4 @@ def write_report(store, path: Path) -> dict:
             w.writerow([_STATUS_CN.get(r["status"], r["status"] or ""), ty, r["url"] or "", r["hint"] or "",
                         r["sender"] or "", r["chat_name"] or "", _fmt_time(r["sent_at"]),
                         _fmt_date(r["first_seen"])])
-    return {"total": len(rows), "denied": denied, "gone": gone}
+    return {"total": len(rows), "denied": denied, "gone": gone, "retry": retry}

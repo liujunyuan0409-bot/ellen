@@ -210,7 +210,7 @@ class _Recorder:
         return Outcome.NEW
 
 
-class OrchestrationTest(Base):
+class _OrchBase(Base):
     def patch(self, obj, name, **kw):
         p = mock.patch.object(obj, name, **kw)
         m = p.start()
@@ -231,6 +231,9 @@ class OrchestrationTest(Base):
         self.search = self.patch(chats, "search_shared", side_effect=lambda c, known: iter(shared))
         self.scan = self.patch(chats, "scan", side_effect=lambda *a, **k: iter(list(links) + list(atts)))
         self.mark = self.patch(sync, "mark_missing", return_value=0)
+
+
+class OrchestrationTest(_OrchBase):
 
     def test_phases_strictly_ordered_and_single_ctx(self):
         rec = _Recorder(slow=("my", "wiki"))
@@ -357,7 +360,7 @@ class OrchestrationTest(Base):
         self.assertIn("我的空间/m2", arch)
 
 
-class FixRound1Test(OrchestrationTest):
+class _SharedBase(_OrchBase):
     """评审第 1 轮：共享文件发现即落清单、失败重试、链接重试、共享文件更新、遍历不全不算成功、失败通知。"""
 
     SH = "doxSHARE001"
@@ -368,6 +371,9 @@ class FixRound1Test(OrchestrationTest):
     def link(self):
         return LinkHit("docx", self.SH, "项目群", "张三", NOW - 60, "方案", "https://x.feishu.cn/docx/" + self.SH)
 
+
+
+class FixRound1Test(_SharedBase):
     def test_disk_full_in_phase3_shared_item_synced_next_run(self):
         self.patch(perms, "process_link", side_effect=lambda c, s, h, k, n: self.shared_item())
         si = self.patch(sync, "sync_item", side_effect=_Recorder(raise_on={self.SH: fetcher.DiskFull("x")}))
@@ -413,8 +419,8 @@ class FixRound1Test(OrchestrationTest):
         self.setup_sources(links=[self.link()])
         self.run_it()
         csv_text = (self.root / "_报告" / "2026-03-01_权限缺口.csv").read_text(encoding="utf-8-sig")
-        self.assertIn("待重试", csv_text)
-        self.assertIn(self.SH, csv_text)
+        self.assertIn("\n待重试,docx,", csv_text)
+        self.assertIn("待重试 1 个", csv_text)
 
         def good(c, s, h, k, n):
             seen.append(h.token)
@@ -428,7 +434,8 @@ class FixRound1Test(OrchestrationTest):
         hit = pl.call_args.args[2]
         self.assertEqual((hit.kind, hit.chat_name, hit.url), ("docx", "项目群", self.link().url))
         csv_text = (self.root / "_报告" / "2026-03-01_权限缺口.csv").read_text(encoding="utf-8-sig")
-        self.assertNotIn("待重试", csv_text)
+        self.assertNotIn("\n待重试,", csv_text)
+        self.assertIn("待重试 0 个", csv_text)
 
     def test_shared_ok_row_refreshed_when_remote_newer(self):
         from tests.test_sync import FakeFetch
@@ -484,6 +491,68 @@ class FixRound1Test(OrchestrationTest):
         self.setup_sources(my=[ri("m1")])
         self.run_it()
         self.notify.assert_not_called()
+
+
+class FixRound2Test(_SharedBase):
+    def test_same_failures_two_days_one_notification_new_failure_notifies(self):
+        fail = {"m1"}
+        self.patch(sync, "sync_item", side_effect=lambda ctx, it: Outcome.FAILED if it.token in fail
+                   else Outcome.NEW)
+        self.setup_sources(my=[ri("m1"), ri("m2")])
+        self.run_it(now=NOW)
+        self.run_it(now=NOW + 86400)
+        self.assertEqual(self.notified_keys(), ["run_failures"])
+        fail.add("m2")
+        self.run_it(now=NOW + 2 * 86400)
+        self.assertEqual(self.notified_keys(), ["run_failures", "run_failures"])
+        self.assertIn("2 个文件失败", self.notify.call_args.args[1])
+
+    def test_link_failures_not_counted_as_files(self):
+        self.patch(sync, "sync_item", side_effect=lambda ctx, it: Outcome.FAILED)
+
+        def bad(c, s, h, k, n):
+            raise ApiError(500, "boom")
+
+        self.patch(perms, "process_link", side_effect=bad)
+        links = [LinkHit("docx", "doxBAD%05d" % i, "项目群", "张三", NOW - i, "x") for i in range(3)]
+        self.setup_sources(my=[ri("m1")], links=links)
+        self.run_it()
+        self.assertIn("1 个文件失败", self.notify.call_args.args[1])
+
+    def test_only_link_failures_no_notification(self):
+        self.patch(sync, "sync_item", side_effect=_Recorder())
+
+        def bad(c, s, h, k, n):
+            raise ApiError(500, "boom")
+
+        self.patch(perms, "process_link", side_effect=bad)
+        self.setup_sources(my=[ri("m1")], links=[self.link()])
+        self.run_it()
+        self.notify.assert_not_called()
+
+    def test_failed_shared_refresh_retried_with_remote_mtime(self):
+        from tests.test_sync import FakeFetch
+        local = self.root / "共享给我" / "项目群" / "方案.pdf"
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"old")
+        s = self.store()
+        s.upsert_item(token=self.SH, type="docx", source="shared", remote_dir=["共享给我", "项目群"],
+                      name="方案", remote_mtime=T1, local_path=local, status="ok")
+        self.patch(chats, "fetch_mtimes", return_value={self.SH: (T1 + 3600, "方案")})
+        ff = FakeFetch()
+        ff.content[self.SH] = RuntimeError("导出超时")
+        self.setup_sources()
+        self.run_it(fetch=ff)
+        self.assertEqual(s.get_item(self.SH)["status"], "failed")
+        self.assertEqual(local.read_bytes(), b"old")
+        ff.content[self.SH] = b"new"
+        self.run_it(fetch=ff, now=NOW + 3600)
+        self.assertEqual(local.read_bytes(), b"new")
+        hist = list((local.parent / "历史版本").iterdir())
+        self.assertEqual([h.read_bytes() for h in hist], [b"old"])
+        text = (self.root / "_报告" / "2026-03-01_备份日志.md").read_text(encoding="utf-8")
+        self.assertIn("共享给我/项目群/方案", text.split("## 更新")[1].split("## 移动")[0])
+        self.assertEqual(s.get_item(self.SH)["status"], "ok")
 
 
 class ReportTest(unittest.TestCase):
