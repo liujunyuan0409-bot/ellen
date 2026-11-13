@@ -90,15 +90,25 @@ def check_env(connect: Callable = socket.create_connection) -> List[Check]:
 
 # ---------------- [2/7] 凭证 ----------------
 
+DIALOG_TIMEOUT = 300  # 秒：弹窗 5 分钟没人填就自动关闭
+
+
 def _dialog(prompt: str, hidden: bool, runner) -> str:
-    script = 'text returned of (display dialog "%s" default answer ""%s with title "飞书备份")' % (
-        prompt.replace("\\", "\\\\").replace('"', '\\"'), " with hidden answer" if hidden else "")
-    r = runner(["osascript", "-e", script], capture_output=True, text=True)
+    script = ('text returned of (display dialog "%s" default answer ""%s with title "飞书备份" '
+              'giving up after %d)') % (
+        prompt.replace("\\", "\\\\").replace('"', '\\"'), " with hidden answer" if hidden else "",
+        DIALOG_TIMEOUT)
+    try:
+        r = runner(["osascript", "-e", script], capture_output=True, text=True, timeout=DIALOG_TIMEOUT + 30)
+    except subprocess.TimeoutExpired:
+        raise Cancelled("已取消：5 分钟内没有填写，凭证未保存")
+    except OSError:  # 含 FileNotFoundError：系统里没有 osascript
+        raise Cancelled("已取消：无法弹出系统对话框（找不到 osascript），凭证未保存")
     if r.returncode != 0:
         raise Cancelled("已取消：没有填写，凭证未保存")
     value = (r.stdout or "").strip()
     if not value:
-        raise Cancelled("已取消：输入为空，凭证未保存")
+        raise Cancelled("已取消：输入为空或 5 分钟内没有填写，凭证未保存")
     return value
 
 

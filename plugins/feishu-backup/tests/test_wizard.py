@@ -292,6 +292,38 @@ class PromptSecretTest(unittest.TestCase):
             wizard.prompt_secret(runner=fake)
         self.assertIn("已取消", str(cm.exception))
 
+    def test_dialog_gives_up_after_300s(self):
+        calls = []
+
+        def fake(cmd, **kw):
+            calls.append((cmd, kw))
+            return subprocess.CompletedProcess(cmd, 0, stdout="x\n", stderr="")
+        wizard.prompt_secret(runner=fake)
+        for cmd, kw in calls:
+            self.assertIn("giving up after 300", cmd[-1])
+            self.assertGreater(kw.get("timeout", 0), 300)
+
+    def test_gave_up_returns_empty(self):
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n", stderr="")
+        with self.assertRaises(wizard.Cancelled) as cm:
+            wizard.prompt_secret(runner=fake)
+        self.assertIn("5 分钟", str(cm.exception))
+
+    def test_subprocess_timeout(self):
+        def fake(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        with self.assertRaises(wizard.Cancelled) as cm:
+            wizard.prompt_secret(runner=fake)
+        self.assertIn("已取消", str(cm.exception))
+
+    def test_osascript_missing(self):
+        def fake(cmd, **kw):
+            raise FileNotFoundError("osascript")
+        with self.assertRaises(wizard.Cancelled) as cm:
+            wizard.prompt_secret(runner=fake)
+        self.assertIn("osascript", str(cm.exception))
+
 
 class CliBase(unittest.TestCase):
     def setUp(self):

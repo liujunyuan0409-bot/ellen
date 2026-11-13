@@ -16,12 +16,19 @@
 |------|------|
 | [wugan-sales](plugins/wugan-sales) | 五感咖啡月度销售表（商家后台取数 → 清洗 → Excel） |
 
+### 办公效率
+
+| 插件 | 用途 |
+|------|------|
+| [feishu-backup](plugins/feishu-backup) | 飞书文件定期备份到本地 Mac，旧版按日期归档，附权限缺口报告 |
+
 ## 安装
 
 ```
 /plugin marketplace add liujunyuan0409-bot/ellen
 /plugin install xhs-content-research@ellen
 /plugin install wugan-sales@ellen
+/plugin install feishu-backup@ellen
 ```
 
 ## 新增插件
