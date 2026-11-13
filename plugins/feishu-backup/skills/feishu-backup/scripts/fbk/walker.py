@@ -1,8 +1,9 @@
 """遍历我的空间 / 知识库 / 快捷方式，产出 RemoteItem。只读。"""
 import logging
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Iterator, Optional
 
+from .client import ApiError
 from .names import sanitize
 
 log = logging.getLogger(__name__)
@@ -21,6 +22,18 @@ class RemoteItem:
     has_children: bool = False
 
 
+@dataclass
+class WalkError:
+    rel_dir: tuple
+    message: str
+
+
+def _record(errors, rel_dir, err):
+    log.warning("遍历失败，已跳过：%s（%s）", "/".join(rel_dir), err)
+    if errors is not None:
+        errors.append(WalkError(rel_dir, str(err)))
+
+
 def _int(v) -> int:
     try:
         return int(v)
@@ -28,44 +41,55 @@ def _int(v) -> int:
         return 0
 
 
-def _resolve_shortcuts(client, shortcuts):
-    """shortcuts: [(token, type)]，返回 {token: mtime}；查不到的不在结果里。"""
+def _resolve_shortcuts(client, shortcuts, rel_dir, errors):
+    """shortcuts: [(token, type)]，返回 {token: mtime}；查不到或批次失败的不在结果里。"""
     out = {}
     uniq = []
+    seen = set()
     for tok, typ in shortcuts:
-        if tok not in [u[0] for u in uniq]:
+        if tok not in seen:
+            seen.add(tok)
             uniq.append((tok, typ))
     for i in range(0, len(uniq), BATCH):
         chunk = uniq[i:i + BATCH]
-        data = client.post("/drive/v1/metas/batch_query", {
-            "request_docs": [{"doc_token": t, "doc_type": ty} for t, ty in chunk],
-            "with_url": False})
+        try:
+            data = client.post("/drive/v1/metas/batch_query", {
+                "request_docs": [{"doc_token": t, "doc_type": ty} for t, ty in chunk],
+                "with_url": False})
+        except ApiError as e:
+            _record(errors, rel_dir, e)
+            continue
         for m in data.get("metas") or []:
             out[m.get("doc_token")] = _int(m.get("latest_modify_time"))
     return out
 
 
-def _list_folder(client, folder_token):
-    return list(client.paginate("/drive/v1/files", {"folder_token": folder_token, "page_size": 200},
-                                "files", token_field="next_page_token"))
-
-
-def walk_my_space(client) -> Iterator[RemoteItem]:
-    root = client.get("/drive/explorer/v2/root_folder/meta")["token"]
+def walk_my_space(client, errors: Optional[list] = None) -> Iterator[RemoteItem]:
+    top = ("我的空间",)
+    try:
+        root = client.get("/drive/explorer/v2/root_folder/meta")["token"]
+    except ApiError as e:
+        _record(errors, top, e)
+        return
     visited = set()
 
     def walk(folder_token, rel_dir):
         if folder_token in visited:
             return
         visited.add(folder_token)
-        files = _list_folder(client, folder_token)
+        try:
+            files = list(client.paginate("/drive/v1/files", {"folder_token": folder_token, "page_size": 200},
+                                         "files", token_field="next_page_token"))
+        except ApiError as e:
+            _record(errors, rel_dir, e)
+            return
         shortcuts = []
         for f in files:
             if f.get("type") == "shortcut":
                 info = f.get("shortcut_info") or {}
                 if info.get("target_token") and info.get("target_type") != "folder":
                     shortcuts.append((info["target_token"], info.get("target_type") or ""))
-        mtimes = _resolve_shortcuts(client, shortcuts) if shortcuts else {}
+        mtimes = _resolve_shortcuts(client, shortcuts, rel_dir, errors) if shortcuts else {}
         for f in files:
             typ = f.get("type")
             name = f.get("name") or ""
@@ -74,8 +98,10 @@ def walk_my_space(client) -> Iterator[RemoteItem]:
             elif typ == "shortcut":
                 info = f.get("shortcut_info") or {}
                 tgt, ttype = info.get("target_token"), info.get("target_type") or ""
-                if not tgt or ttype == "folder":
+                if not tgt:
                     log.warning("快捷方式无可用目标，已跳过：%s", name)
+                elif ttype == "folder":
+                    yield from walk(tgt, rel_dir + (sanitize(name),))
                 elif tgt not in mtimes:
                     log.warning("快捷方式目标查不到，已跳过：%s", name)
                 else:
@@ -83,11 +109,16 @@ def walk_my_space(client) -> Iterator[RemoteItem]:
             else:
                 yield RemoteItem(f["token"], typ, name, rel_dir, "my", _int(f.get("modified_time")))
 
-    yield from walk(root, ("我的空间",))
+    yield from walk(root, top)
 
 
-def walk_wiki(client) -> Iterator[RemoteItem]:
-    for space in client.paginate("/wiki/v2/spaces", {"page_size": 50}, "items"):
+def walk_wiki(client, errors: Optional[list] = None) -> Iterator[RemoteItem]:
+    try:
+        spaces = list(client.paginate("/wiki/v2/spaces", {"page_size": 50}, "items"))
+    except ApiError as e:
+        _record(errors, ("知识库",), e)
+        return
+    for space in spaces:
         sid = space["space_id"]
         base = ("知识库", sanitize(space.get("name") or sid))
         visited = set()
@@ -96,7 +127,12 @@ def walk_wiki(client) -> Iterator[RemoteItem]:
             params = {"page_size": 50}
             if parent_token:
                 params["parent_node_token"] = parent_token
-            for n in client.paginate("/wiki/v2/spaces/%s/nodes" % sid, params, "items"):
+            try:
+                nodes = list(client.paginate("/wiki/v2/spaces/%s/nodes" % sid, params, "items"))
+            except ApiError as e:
+                _record(errors, rel_dir, e)
+                return
+            for n in nodes:
                 nt = n.get("node_token")
                 if nt in visited:
                     continue

@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "feishu-backup" / "scripts"))
 
-from fbk.client import FeishuClient  # noqa: E402
-from fbk.walker import RemoteItem, walk_my_space, walk_wiki  # noqa: E402
+from fbk.client import ApiError, FeishuClient  # noqa: E402
+from fbk.walker import RemoteItem, WalkError, walk_my_space, walk_wiki  # noqa: E402
 from tests.fakes import FakeTransport  # noqa: E402
 
 
@@ -95,6 +95,52 @@ class MySpaceTest(unittest.TestCase):
         items = list(walk_my_space(make(t)))
         self.assertEqual([i.token for i in items], ["D"])
 
+    def test_failing_folder_does_not_abort_siblings(self):
+        t = FakeTransport()
+        self.root(t)
+        files_resp(t, "ROOT", [f("BAD", "坏", "folder"), f("OK", "好", "folder")])
+        t.queue_json("GET", "/drive/v1/files", code=403, msg="forbidden")
+        files_resp(t, "OK", [f("D", "d", "docx")])
+        errs = []
+        items = list(walk_my_space(make(t), errs))
+        self.assertEqual([i.token for i in items], ["D"])
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0].rel_dir, ("我的空间", "坏"))
+        self.assertIsInstance(errs[0], WalkError)
+
+    def test_batch_query_failure_keeps_other_items(self):
+        t = FakeTransport()
+        self.root(t)
+        files_resp(t, "ROOT", [f("SC1", "快捷", "shortcut", "0",
+                                 shortcut_info={"target_type": "sheet", "target_token": "T"}),
+                               f("D", "d", "docx")])
+        t.queue_json("POST", "/drive/v1/metas/batch_query", code=99991, msg="boom")
+        errs = []
+        items = list(walk_my_space(make(t), errs))
+        self.assertEqual([i.token for i in items], ["D"])
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0].rel_dir, ("我的空间",))
+
+    def test_folder_shortcut_contents_under_shortcut_name(self):
+        t = FakeTransport()
+        self.root(t)
+        files_resp(t, "ROOT", [f("SC1", "指向/夹", "shortcut", "0",
+                                 shortcut_info={"target_type": "folder", "target_token": "TF"})])
+        files_resp(t, "TF", [f("D", "d", "docx")])
+        items = list(walk_my_space(make(t)))
+        self.assertEqual(items[0].rel_dir, ("我的空间", "指向_夹"))
+        self.assertFalse([c for c in t.calls if c["path"] == "/drive/v1/metas/batch_query"])
+
+    def test_folder_shortcut_to_ancestor_no_loop(self):
+        t = FakeTransport()
+        self.root(t)
+        files_resp(t, "ROOT", [f("FLD1", "子", "folder")])
+        files_resp(t, "FLD1", [f("SC", "回根", "shortcut", "0",
+                                 shortcut_info={"target_type": "folder", "target_token": "ROOT"}),
+                               f("D", "d", "docx")])
+        items = list(walk_my_space(make(t)))
+        self.assertEqual([i.token for i in items], ["D"])
+
 
 class WikiTest(unittest.TestCase):
     def node(self, tok, obj, title, parent="", has_child=False, typ="docx", mt="1700000001"):
@@ -133,6 +179,19 @@ class WikiTest(unittest.TestCase):
         items = list(walk_wiki(make(t)))
         self.assertEqual(items[0].mtime, 0)
         self.assertEqual(items[1].rel_dir, ("知识库", "a_b", "x_y"))
+
+    def test_failing_space_does_not_abort_other_space(self):
+        t = FakeTransport()
+        t.queue_json("GET", "/wiki/v2/spaces", {"items": [{"space_id": "S1", "name": "坏库"},
+                                                          {"space_id": "S2", "name": "好库"}], "has_more": False})
+        t.queue_json("GET", "/wiki/v2/spaces/S1/nodes", code=131006, msg="no perm")
+        t.queue_json("GET", "/wiki/v2/spaces/S2/nodes",
+                     {"items": [{"space_id": "S2", "node_token": "N", "obj_token": "O", "obj_type": "docx",
+                                 "title": "t", "has_child": False, "obj_edit_time": "5"}], "has_more": False})
+        errs = []
+        items = list(walk_wiki(make(t), errs))
+        self.assertEqual([i.token for i in items], ["O"])
+        self.assertEqual([e.rel_dir for e in errs], [("知识库", "坏库")])
 
 
 if __name__ == "__main__":
