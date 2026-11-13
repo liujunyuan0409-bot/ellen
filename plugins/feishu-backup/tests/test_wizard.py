@@ -338,7 +338,16 @@ class CliBase(unittest.TestCase):
         p = mock.patch.object(schedule, "default_agents_dir", return_value=self.agents)
         p.start()
         self.addCleanup(p.stop)
+        p = mock.patch.object(schedule, "default_app_dir", return_value=base / "AppSupport" / "app")
+        p.start()
+        self.addCleanup(p.stop)
         self.base = base
+
+    def broken_schedule(self):
+        """装一个指向已不存在的程序副本的定时任务（模拟插件更新后缓存被清掉）。"""
+        self.agents.mkdir(parents=True, exist_ok=True)
+        (self.agents / "local.feishu-backup.plist").write_bytes(
+            schedule.plist_xml(sys.executable, str(self.base / "cache" / "0.0.9" / "fbk.py")))
 
     def cli(self, *argv):
         out = io.StringIO()
@@ -407,6 +416,37 @@ class CliStatusTest(CliBase):
         self.assertEqual(d["counts"]["items"], {"ok": 1, "failed": 1})
         self.assertIsNotNone(d["last_success"])
         self.assertTrue(d["reports"]["log"].endswith("2026-01-02_1430_备份日志.md"))
+
+
+class CliScheduleVerifyTest(CliBase):
+    """终审 I1：status / doctor 发现定时任务指向的程序不在了或版本不一致，给出 ✗ 和修法。"""
+
+    def test_status_reports_broken_schedule(self):
+        self.broken_schedule()
+        code, out = self.cli("status", "--json")
+        d = json.loads(out)
+        self.assertTrue(d["schedule_installed"])
+        self.assertTrue(d["schedule_problems"])
+        code, out = self.cli("status")
+        self.assertIn("✗", out)
+        self.assertIn("重新运行 setup --schedule", out)
+
+    def test_doctor_reports_broken_schedule(self):
+        config.save_config(config.Config("cli_fake", "sec_fake"))
+        self.broken_schedule()
+        with mock.patch.object(cli, "_make_client"), mock.patch.object(wizard, "doctor", return_value=[]):
+            code, out = self.cli("doctor", "--json")
+        self.assertEqual(code, 1)
+        checks = {c["name"]: c for c in json.loads(out)["checks"]}
+        self.assertFalse(checks["定时任务"]["ok"])
+        self.assertIn("setup --schedule", checks["定时任务"]["fix"])
+
+    def test_doctor_without_schedule_has_no_schedule_check(self):
+        config.save_config(config.Config("cli_fake", "sec_fake"))
+        with mock.patch.object(cli, "_make_client"), mock.patch.object(wizard, "doctor", return_value=[]):
+            code, out = self.cli("doctor", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["checks"], [])
 
 
 class CliSetupTest(CliBase):

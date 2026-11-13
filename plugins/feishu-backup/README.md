@@ -173,6 +173,8 @@
 
 日常可以说：「飞书备份状态」「现在备份一次」「看权限缺口」「飞书备份重新登录」。
 
+**插件更新后**：对 Claude 说「飞书备份设置」或运行一次 `setup --schedule`。定时任务运行的是复制到 `~/Library/Application Support/feishu-backup/app/` 的程序副本（插件缓存目录在更新时会被清掉），重新安装才会用上新版本。
+
 **登录有效期**：登录信息每次备份时自动续期。Mac 连续 7 天以上没有成功备份（例如一直没开机），登录会过期，系统通知会提醒你，对 Claude 说「飞书备份重新登录」即可。
 
 ## 备份目录长这样
@@ -187,7 +189,7 @@
 └── .feishu-backup/        清单数据库（换电脑时一起拷走）
 ```
 
-本机还会用到：`~/.config/feishu-backup/`（应用凭证和登录信息，权限仅自己可读）、`~/Library/Logs/feishu-backup/`（运行日志，保留 30 天）。
+本机还会用到：`~/.config/feishu-backup/`（应用凭证和登录信息，权限仅自己可读）、`~/Library/Logs/feishu-backup/`（运行日志，保留 30 天）、`~/Library/Application Support/feishu-backup/app/`（定时任务运行的程序副本）。
 
 ## 换电脑
 
@@ -199,7 +201,7 @@
 ## 卸载
 
 1. 对 Claude 说「卸载飞书备份」，或运行 `python3 <插件目录>/skills/feishu-backup/scripts/fbk.py schedule uninstall`，停掉定时任务。
-2. 删除 `~/.config/feishu-backup` 文件夹（凭证和登录信息）。
+2. 删除 `~/.config/feishu-backup` 文件夹（凭证和登录信息）和 `~/Library/Application Support/feishu-backup` 文件夹（程序副本）。
 3. `/plugin uninstall feishu-backup@ellen`。
 
 备份目录不会被动，里面的文件都还在，要不要删由你决定。

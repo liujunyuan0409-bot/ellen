@@ -121,7 +121,9 @@ class PlistTest(unittest.TestCase):
         self.assertEqual(d["Label"], "local.feishu-backup")
         self.assertIs(d["RunAtLoad"], True)
         self.assertEqual(d["StartInterval"], 3600)
-        self.assertEqual(d["ProgramArguments"], ["/usr/bin/python3", "/opt/fbk.py", "run"])
+        # 终审 I1：caffeinate -i 防止跑到一半进入空闲睡眠
+        self.assertEqual(d["ProgramArguments"],
+                         ["/usr/bin/caffeinate", "-i", "/usr/bin/python3", "/opt/fbk.py", "run"])
         self.assertTrue(d["StandardOutPath"].startswith(str(self.logdir)))
         self.assertTrue(d["StandardErrorPath"].startswith(str(self.logdir)))
 
@@ -136,7 +138,7 @@ class PlistTest(unittest.TestCase):
         p = schedule.install(python="/usr/bin/python3", script="/opt/fbk.py",
                              agents_dir=agents, runner=runner, uid=501)
         self.assertEqual(p, agents / "local.feishu-backup.plist")
-        self.assertEqual(plistlib.loads(p.read_bytes())["ProgramArguments"][2], "run")
+        self.assertEqual(plistlib.loads(p.read_bytes())["ProgramArguments"][-1], "run")
         self.assertTrue(self.logdir.is_dir())
         self.assertEqual(calls, [
             ["launchctl", "bootout", "gui/501/local.feishu-backup"],
@@ -164,7 +166,86 @@ class PlistTest(unittest.TestCase):
             return subprocess.CompletedProcess(args, rc, b"", "boom".encode())
 
         with self.assertRaises(RuntimeError):
-            schedule.install(python="p", script="s", agents_dir=agents, runner=runner, uid=1)
+            schedule.install(python="p", script="s", agents_dir=agents, runner=runner, uid=1,
+                             sleep=lambda s: None)
+
+    def test_bootstrap_eio_retried_once(self):
+        # 终审 M-2：bootout 之后立刻 bootstrap 可能 EIO，等 1 秒重试一次
+        agents = Path(self.tmp.name) / "LaunchAgents"
+        boots, sleeps = [], []
+
+        def runner(args, **kw):
+            if args[1] == "bootstrap":
+                boots.append(1)
+                rc = 5 if len(boots) == 1 else 0
+                return subprocess.CompletedProcess(args, rc, b"", b"Input/output error")
+            return subprocess.CompletedProcess(args, 0, b"", b"")
+
+        schedule.install(python="p", script="s", agents_dir=agents, runner=runner, uid=1, sleep=sleeps.append)
+        self.assertEqual(len(boots), 2)
+        self.assertEqual(sleeps, [1])
+
+
+class AppCopyTest(unittest.TestCase):
+    """终审 I1：定时任务不指向会被插件更新清掉的缓存目录，而是复制一份到 Application Support。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.app = self.base / "AppSupport" / "feishu-backup" / "app"
+        p = mock.patch.object(config, "LOG_DIR", self.base / "logs")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_install_app_copies_scripts_and_replaces(self):
+        script = schedule.install_app(app_dir=self.app)
+        self.assertEqual(script, self.app / "fbk.py")
+        self.assertTrue(script.is_file())
+        self.assertTrue((self.app / "fbk" / "runner.py").is_file())
+        self.assertFalse(list(self.app.rglob("__pycache__")))
+        stale = self.app / "fbk" / "old_module.py"
+        stale.write_text("x")
+        schedule.install_app(app_dir=self.app)
+        self.assertFalse(stale.exists())
+        self.assertEqual(sorted(p.name for p in self.app.parent.iterdir()), ["app"])  # 不留临时目录
+
+    def test_install_points_plist_at_app_copy(self):
+        agents = self.base / "LaunchAgents"
+        ok = lambda args, **kw: subprocess.CompletedProcess(args, 0, b"", b"")  # noqa: E731
+        p = schedule.install(python="/usr/bin/python3", agents_dir=agents, runner=ok, uid=1, app_dir=self.app)
+        args = plistlib.loads(p.read_bytes())["ProgramArguments"]
+        self.assertEqual(args[3], str(self.app / "fbk.py"))
+        self.assertTrue(Path(args[3]).is_file())
+        self.assertNotIn("plugins", args[3])
+
+    def test_pick_python_prefers_system_python_when_new_enough(self):
+        good = lambda args, **kw: subprocess.CompletedProcess(args, 0, "True\n", "")  # noqa: E731
+        old = lambda args, **kw: subprocess.CompletedProcess(args, 0, "False\n", "")  # noqa: E731
+        self.assertEqual(schedule.pick_python(runner=good, exists=lambda p: True), "/usr/bin/python3")
+        self.assertEqual(schedule.pick_python(runner=old, exists=lambda p: True), sys.executable)
+        self.assertEqual(schedule.pick_python(runner=good, exists=lambda p: False), sys.executable)
+
+        def boom(args, **kw):
+            raise OSError("no")
+        self.assertEqual(schedule.pick_python(runner=boom, exists=lambda p: True), sys.executable)
+
+    def _installed(self):
+        agents = self.base / "LaunchAgents"
+        ok = lambda args, **kw: subprocess.CompletedProcess(args, 0, b"", b"")  # noqa: E731
+        with mock.patch.object(schedule, "CAFFEINATE", sys.executable):
+            return schedule.install(python=sys.executable, agents_dir=agents, runner=ok, uid=1, app_dir=self.app)
+
+    def test_verify_ok_missing_script_and_version_mismatch(self):
+        plist = self._installed()
+        self.assertEqual(schedule.verify(plist), [])
+        init = self.app / "fbk" / "__init__.py"
+        init.write_text('__version__ = "0.0.9"\n')
+        probs = schedule.verify(plist)
+        self.assertTrue(any("0.0.9" in p for p in probs), probs)
+        (self.app / "fbk.py").unlink()
+        self.assertTrue(any("fbk.py" in p for p in schedule.verify(plist)))
+        self.assertIsNone(schedule.verify(self.base / "nope.plist"))  # 没装定时任务
 
 
 if __name__ == "__main__":

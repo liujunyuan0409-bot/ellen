@@ -93,6 +93,19 @@ def _plist():
     return schedule.default_agents_dir() / (schedule.LABEL + ".plist")
 
 
+SCHEDULE_FIX = "重新运行 setup --schedule（插件更新或换了 Python 之后都要重新运行一次）"
+
+
+def _schedule_check():
+    """已装定时任务时检查它还能不能跑；没装返回 None。"""
+    probs = schedule.verify(_plist())
+    if probs is None:
+        return None
+    if probs:
+        return wizard.Check("定时任务", False, "；".join(probs), SCHEDULE_FIX)
+    return wizard.Check("定时任务", True, "已安装，程序版本 %s" % schedule.__version__)
+
+
 def _need_bytes():
     st = _load_state(SCAN_STATE) or {}
     return int(st.get("upload_bytes") or 0) + int(st.get("export_est_bytes") or 0)
@@ -179,7 +192,7 @@ def cmd_schedule_install(args, title="[7/7] 定时任务"):
     now = int(time.time())
     detail = "已安装（%s）。马上会检查一次，之后每小时检查一次；距上次成功满 %d 小时才真正备份。下次检查约 %s" % (
         path, cfg.interval_hours, _fmt_ts(now + schedule.START_INTERVAL))
-    fix = "卸载：python3 %s schedule uninstall" % schedule.default_script()
+    fix = "卸载：python3 %s schedule uninstall；插件更新后请重新运行 setup --schedule" % schedule.default_script()
     c = wizard.Check("定时任务", True, detail, fix)
     if args.json:
         return _checks_out(args, [c], title)
@@ -244,6 +257,9 @@ def cmd_doctor(args):
     if cfg is None:
         return _fail(args, "还没有应用凭证", "先运行 setup --credentials")
     checks = wizard.doctor(_make_client(cfg))
+    sc = _schedule_check()
+    if sc is not None:
+        checks.append(sc)
     ok = all(c.ok for c in checks)
     _save_state(DOCTOR_STATE, {"at": int(time.time()), "ok": ok})
     return _checks_out(args, checks, "[4/7] 权限体检")
@@ -293,7 +309,8 @@ def _status_data():
     d = {"config": cfg is not None, "logged_in": bool(tok and tok.get("refresh_token")),
          "backup_root": str(root) if root else None, "root_exists": bool(root and root.is_dir()),
          "last_success": None, "last_success_text": "从未成功", "last_run": None,
-         "schedule_installed": _plist().exists(), "counts": {"items": {}, "attachments": {}, "links": {}},
+         "schedule_installed": _plist().exists(), "schedule_problems": schedule.verify(_plist()) or [],
+         "counts": {"items": {}, "attachments": {}, "links": {}},
          "reports": {"log": None, "perms": None}}
     db = root / schedule.STATE_DIR / "manifest.sqlite" if root else None
     if db and db.exists():
@@ -331,7 +348,8 @@ def cmd_status(args):
              "备份目录：%s" % (d["backup_root"] or "未设置") +
              ("" if not d["backup_root"] or d["root_exists"] else "（不存在，外接盘没插？）"),
              "上次成功：%s" % d["last_success_text"],
-             "定时任务：%s" % ("已安装" if d["schedule_installed"] else "未安装")]
+             "定时任务：%s" % (("✗ 已安装但跑不了：%s。怎么办：%s" % ("；".join(d["schedule_problems"]), SCHEDULE_FIX))
+                              if d["schedule_problems"] else ("已安装" if d["schedule_installed"] else "未安装"))]
     if d["last_run"]:
         lr = d["last_run"]
         lines.append("最近一次运行：%s 开始，%s" % (lr["started"], "成功" if lr["ok"] else
