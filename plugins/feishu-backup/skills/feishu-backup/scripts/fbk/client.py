@@ -38,6 +38,18 @@ class ReadOnlyViolation(Exception):
     pass
 
 
+class LoginRequired(Exception):
+    """登录失效（令牌被吊销、过期或无效）：需要用户重新登录。auth.LoginRequired 即此类。"""
+
+
+class NetworkError(Exception):
+    """网络异常或 5xx：暂时性故障，不代表需要重新登录。auth.NetworkError 即此类。"""
+
+
+# 飞书「用户令牌无效 / 过期 / 被吊销」错误码
+TOKEN_INVALID_CODES = {99991663, 99991668, 99991677}
+
+
 def default_transport(method, url, headers, body, stream_to=None, read_body=True):
     req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
     try:
@@ -118,23 +130,29 @@ class FeishuClient:
                 last = ApiError(status, "HTTP %s" % status)
             if attempt < MAX_RETRIES:
                 self._sleep(2 ** attempt)
-        if isinstance(last, ApiError):
+        if isinstance(last, ApiError) and last.code == 429:
             raise last
-        raise ApiError(-1, "网络异常：%s" % last)
+        # 网络断开或 5xx 重试用尽：当作离线，由 runner 结束本轮（不记成功、不算文件失败）
+        raise NetworkError("网络异常，稍后重试：%s" % last)
 
     @staticmethod
     def _parse(status, raw):
+        if status == 401:
+            raise LoginRequired("登录已失效（HTTP 401），请重新登录")
         try:
             obj = json.loads(raw.decode("utf-8"))
         except ValueError:
             raise ApiError(status, "非 JSON 响应")
         if not isinstance(obj, dict):
             raise ApiError(status, "响应格式异常")
-        if obj.get("code", 0) != 0:
-            raise ApiError(obj.get("code"), obj.get("msg", ""))
+        code = obj.get("code", 0)
+        if code in TOKEN_INVALID_CODES:
+            raise LoginRequired("登录令牌无效（code=%s），请重新登录" % code)
+        if code != 0:
+            raise ApiError(code, obj.get("msg", ""))
         if status >= 400:
             raise ApiError(status, obj.get("msg", "HTTP %s" % status))
-        return obj.get("data", obj) if "data" in obj else {}
+        return obj.get("data") or {}
 
     def request(self, method, path, params=None, body=None):
         method = method.upper()
@@ -165,6 +183,8 @@ class FeishuClient:
 
     def head_size(self, path):
         status, rh, _raw = self._send("GET", path, None, None, {"Range": "bytes=0-0"}, read_body=False)
+        if status == 401:
+            raise LoginRequired("登录已失效（HTTP 401），请重新登录")
         if status >= 400:
             raise ApiError(status, "HTTP %s" % status)
         cr = _header(rh, "Content-Range")

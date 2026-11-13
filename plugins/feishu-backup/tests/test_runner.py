@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -553,6 +554,37 @@ class FixRound2Test(_SharedBase):
         text = (self.root / "_报告" / "2026-03-01_备份日志.md").read_text(encoding="utf-8")
         self.assertIn("共享给我/项目群/方案", text.split("## 更新")[1].split("## 移动")[0])
         self.assertEqual(s.get_item(self.SH)["status"], "ok")
+
+
+class NetworkDropTest(Base):
+    """终审 I2：阶段 1 中途断网 = 离线：退出 0、不记成功、已备份的保留、不发失败通知。"""
+
+    def test_network_drop_mid_phase1_is_offline(self):
+        self.t._q[("GET", "/drive/v1/files")] = [(200, {}, json.dumps({"code": 0, "data": {"files": [
+            {"token": "boxFAKE0001", "type": "file", "name": "合同.zip", "modified_time": str(T1)},
+            {"token": "fldSUB00001", "type": "folder", "name": "子目录"},
+        ], "has_more": False}}).encode())]
+        self.t.queue("GET", "/drive/v1/files/boxFAKE0001/download", body=b"zip-bytes")
+        started = threading.Event()
+        inner = self.t
+
+        def transport(method, url, headers, body, **kw):
+            if "/drive/v1/files/boxFAKE0001/download" in url:
+                started.set()
+            if url.split("?")[0].endswith("/drive/v1/files") and "fldSUB00001" in url:
+                started.wait(5)  # 保证第一个文件已经开始下载
+                inner.calls.append({"path": "sub"})
+                raise urllib.error.URLError("network is down")
+            return inner(method, url, headers, body, **kw)
+
+        code = runner.run(transport=transport, sleep=lambda s: None, now=NOW, force=True)
+        self.assertEqual(code, 0)
+        s = self.store()
+        self.assertIsNone(s.last_success())
+        self.assertEqual(s._read("SELECT ok FROM runs")[0][0], 0)
+        self.assertEqual((self.root / "我的空间" / "合同.zip").read_bytes(), b"zip-bytes")
+        self.assertEqual(s.get_item("boxFAKE0001")["status"], "ok")
+        self.notify.assert_not_called()
 
 
 class ReportTest(unittest.TestCase):

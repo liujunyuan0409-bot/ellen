@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "feishu-backup" / "scripts"))
 
+from fbk import auth  # noqa: E402
 from fbk.client import ApiError, FeishuClient, ReadOnlyViolation  # noqa: E402
 from tests.fakes import FakeTransport  # noqa: E402
 
@@ -50,9 +51,50 @@ class ClientTest(unittest.TestCase):
     def test_gives_up_after_five_retries(self):
         t = FakeTransport().queue("GET", "/x", status=503)
         c, _ = make(t)
-        with self.assertRaises(ApiError):
+        with self.assertRaises(auth.NetworkError):  # 5xx 重试用尽 = 暂时性故障，不是接口错误
             c.get("/x")
         self.assertEqual(len(t.calls), 6)
+
+    def test_429_exhausted_stays_api_error(self):
+        t = FakeTransport().queue("GET", "/x", status=429)
+        c, _ = make(t)
+        with self.assertRaises(ApiError) as cm:
+            c.get("/x")
+        self.assertNotIsInstance(cm.exception, auth.NetworkError)
+
+    def test_network_error_exhausted_raises_network_error(self):
+        def tr(m, u, h, b, **kw):
+            raise OSError("no route")
+        c = FeishuClient(lambda: "t", transport=tr, sleep=lambda s: None)
+        with self.assertRaises(auth.NetworkError):
+            c.get("/x")
+        with self.assertRaises(auth.NetworkError):
+            c.download("/y", Path(tempfile.mkdtemp()) / "f")
+
+    def test_revoked_token_codes_raise_login_required(self):
+        for code in (99991663, 99991668, 99991677):
+            t = FakeTransport().queue_json("GET", "/x", code=code, msg="invalid token")
+            c, _ = make(t)
+            with self.assertRaises(auth.LoginRequired):
+                c.get("/x")
+
+    def test_http_401_raises_login_required(self):
+        t = FakeTransport().queue("GET", "/x", status=401, body={"code": 1, "msg": "unauthorized"})
+        c, _ = make(t)
+        with self.assertRaises(auth.LoginRequired):
+            c.get("/x")
+        t = FakeTransport().queue("GET", "/d", status=401, body=b"")
+        c, _ = make(t)
+        with self.assertRaises(auth.LoginRequired):
+            c.download("/d", Path(tempfile.mkdtemp()) / "f")
+        with self.assertRaises(auth.LoginRequired):
+            c.head_size("/d")
+
+    def test_null_data_is_empty_dict(self):
+        t = FakeTransport().queue("GET", "/x", body={"code": 0, "msg": "ok", "data": None})
+        c, _ = make(t)
+        self.assertEqual(c.get("/x"), {})
+        self.assertEqual(list(c.paginate("/x", {}, "items")), [])
 
     def test_retries_network_error(self):
         calls = []
@@ -66,11 +108,11 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(c.get("/x"), {"ok": True})
 
     def test_api_error_on_nonzero_code(self):
-        t = FakeTransport().queue_json("GET", "/x", code=99991663, msg="bad token")
+        t = FakeTransport().queue_json("GET", "/x", code=131006, msg="no perm")
         c, _ = make(t)
         with self.assertRaises(ApiError) as cm:
             c.get("/x")
-        self.assertEqual(cm.exception.code, 99991663)
+        self.assertEqual(cm.exception.code, 131006)
 
     def test_paginate_follows_tokens(self):
         t = (FakeTransport()

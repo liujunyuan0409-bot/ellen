@@ -11,7 +11,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from . import config
-from .client import DEFAULT_BASE, default_transport
+from .client import DEFAULT_BASE, LoginRequired, NetworkError, default_transport  # noqa: F401 —— 对外仍以 auth.* 使用
 
 REDIRECT_URI = "http://127.0.0.1:8765/callback"
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
@@ -139,14 +139,6 @@ SCOPES = [
     "im:message.p2p_msg:get_as_user",
     "im:chat.members:read",
 ]
-
-
-class LoginRequired(Exception):
-    pass
-
-
-class NetworkError(Exception):
-    """网络异常或 5xx：暂时性故障，不代表需要重新登录。"""
 
 
 RETRIES = 3
