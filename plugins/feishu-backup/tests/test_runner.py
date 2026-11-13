@@ -619,6 +619,32 @@ class OuterFailureTest(Base):
         self.assertEqual(self.notified_keys(), ["error"])
 
 
+class StaleAlarmTest(Base):
+    """终审 minor：定时运行时距上次成功超过 3 × interval，每天提醒一次。"""
+
+    def succeed_once(self):
+        s = self.store()
+        s.finish_run(s.start_run(), True, {})
+
+    def test_stale_scheduled_run_notifies(self):
+        self.succeed_once()
+        self.assertEqual(self.run_it(force=False, now=int(time.time()) + 4 * 86400), 0)
+        self.assertIn("stale", self.notified_keys())
+        msg = [c.args[1] for c in self.notify.call_args_list if c.kwargs.get("key") == "stale"][0]
+        self.assertIn("4 天没有成功完成", msg)
+        self.assertIn("飞书备份状态", msg)
+
+    def test_not_stale_or_manual_run_no_alarm(self):
+        self.succeed_once()
+        self.run_it(force=False, now=int(time.time()) + 2 * 86400)  # 2 天 < 3 × 24 小时
+        self.run_it(force=True, now=int(time.time()) + 10 * 86400)  # --now 不报
+        self.assertNotIn("stale", self.notified_keys())
+
+    def test_never_succeeded_no_alarm(self):
+        self.run_it(force=False)
+        self.assertNotIn("stale", self.notified_keys())
+
+
 class NetworkDropTest(Base):
     """终审 I2：阶段 1 中途断网 = 离线：退出 0、不记成功、已备份的保留、不发失败通知。"""
 

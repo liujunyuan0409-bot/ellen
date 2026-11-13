@@ -321,6 +321,22 @@ def _notify_failures(r) -> None:
     notify.notify_if_changed(TITLE, msg + "，详见 _报告", "run_failures", ids, now=r.now)
 
 
+STALE_FACTOR = 3
+
+
+def _check_stale(last_success, interval_hours, now) -> None:
+    """定时运行开头：距上次成功超过 3 × interval 就提醒（每天最多一次），防止静默地一直不成功。"""
+    if last_success is None:
+        return
+    age = int(now) - int(last_success)
+    if age < STALE_FACTOR * int(interval_hours) * 3600:
+        return
+    days = age // 86400
+    log.warning("已经 %d 天没有成功完成备份", days)
+    notify.notify(TITLE, "飞书备份已经 %d 天没有成功完成，打开 Claude 说『飞书备份状态』看原因" % days,
+                  key="stale", now=now)
+
+
 def _on_term(signum, frame):
     raise SystemExit(128 + signum)
 
@@ -385,7 +401,10 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
         return 2
 
     try:
-        if not force and not schedule.is_due(store.last_success(), cfg.interval_hours, now):
+        last = store.last_success()
+        if not force:
+            _check_stale(last, cfg.interval_hours, now)
+        if not force and not schedule.is_due(last, cfg.interval_hours, now):
             log.info("距上次成功不足 %s 小时，跳过", cfg.interval_hours)
             return 0
         try:
