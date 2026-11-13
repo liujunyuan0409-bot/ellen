@@ -49,7 +49,7 @@ class NamesTest(unittest.TestCase):
     def test_unique_path_long_name_within_255(self):
         with tempfile.TemporaryDirectory() as t:
             d = Path(t)
-            p = d / ("长" * 80 + ".pdf")
+            p = d / ("长" * 83 + "ab.pdf")
             p.write_text("x")
             u = unique_path(p)
             self.assertNotEqual(u, p)
