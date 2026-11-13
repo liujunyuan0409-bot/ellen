@@ -245,10 +245,79 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(row["local_path"], str(self.root / "我的空间" / "A" / "手册.pdf"))
         self.assertEqual(self.all_files(), ["我的空间/A/手册.pdf"])
         self.assertEqual(len(self.fetch.calls), 1)
-        # 下一轮：低优先级位置先出现也不会抢走
+        # 下一轮按阶段 my → wiki：wiki 位置仍是重复
         self.new_run()
-        out = sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("共享给我",), source="shared"))
+        self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "A"))),
+                         Outcome.UNCHANGED)
+        out = sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("知识库", "团队"), source="wiki"))
         self.assertEqual(out, Outcome.DUPLICATE)
+
+    def test_moved_out_of_my_space_into_wiki_keeps_updating(self):
+        self.fetch.content["doxFAKE01"] = b"v1"
+        self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "手册", mtime=T1)), Outcome.NEW)
+        self.fetch.content["doxFAKE01"] = b"v2"
+        self.new_run()  # 我的空间里已没有它，只在知识库出现，且内容更新
+        out = sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("知识库", "团队"), source="wiki", mtime=T2))
+        self.assertIn(out, (Outcome.MOVED, Outcome.UPDATED))
+        w = self.root / "知识库" / "团队"
+        self.assertEqual((w / "手册.pdf").read_bytes(), b"v2")
+        self.assertEqual((w / "历史版本" / "手册_2025-10-02_1530.pdf").read_bytes(), b"v1")
+        self.assertEqual(self.all_files(), ["知识库/团队/历史版本/手册_2025-10-02_1530.pdf", "知识库/团队/手册.pdf"])
+        row = self.store.get_item("doxFAKE01")
+        self.assertEqual((row["status"], row["source"], row["remote_mtime"]), ("ok", "wiki", T2))
+
+    def test_failed_sync_of_content_duplicate_never_touches_owner_file(self):
+        # 复现：Y 内容与 X 相同被判重复；Y 下一次同步失败；再下一次 Y 有新内容
+        X = lambda m: item("boxFAKEX1", "x.zip", ftype="file", mtime=m)
+        Y = lambda m: item("boxFAKEY1", "y.zip", rel_dir=("共享给我",), ftype="file", source="shared", mtime=m)
+        self.fetch.content["boxFAKEX1"] = b"X1"
+        sync_item(self.ctx, X(T1))
+        self.fetch.content["boxFAKEX1"] = b"X2"
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, X(T2)), Outcome.UPDATED)
+        self.fetch.content["boxFAKEY1"] = b"X2"
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, Y(T1)), Outcome.DUPLICATE)
+        self.fetch.content["boxFAKEY1"] = RuntimeError("boom")
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, Y(T2)), Outcome.FAILED)
+        row = self.store.get_item("boxFAKEY1")
+        self.assertEqual(row["status"], "duplicate")
+        self.assertEqual(row["local_path"], str(self.root / "我的空间" / "x.zip"))
+        self.fetch.content["boxFAKEY1"] = b"Y3"
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, Y(T3)), Outcome.NEW)
+        d = self.root / "我的空间"
+        self.assertEqual((d / "x.zip").read_bytes(), b"X2")
+        self.assertEqual((d / "历史版本" / "x_2025-10-02_1530.zip").read_bytes(), b"X1")
+        self.assertEqual((self.root / "共享给我" / "y.zip").read_bytes(), b"Y3")
+        self.assertEqual(self.all_files(), ["共享给我/y.zip", "我的空间/x.zip", "我的空间/历史版本/x_2025-10-02_1530.zip"])
+        self.assertEqual(self.store.get_item("boxFAKEX1")["local_path"], str(d / "x.zip"))
+
+    def test_concurrent_same_token_claimed_once(self):
+        import threading
+        gate = threading.Event()
+        entered = threading.Event()
+        orig = self.fetch._write
+
+        def blocking_write(token, dest):
+            entered.set()
+            gate.wait(timeout=5)
+            return orig(token, dest)
+        self.fetch._write = blocking_write
+        self.fetch.content["doxFAKE01"] = b"v1"
+        res = []
+        a = threading.Thread(target=lambda: res.append(sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "A")))))
+        b = threading.Thread(target=lambda: res.append(sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "B")))))
+        a.start()
+        self.assertTrue(entered.wait(timeout=5))  # 第一个已在下载中
+        b.start()
+        b.join(timeout=5)
+        gate.set()
+        a.join(timeout=5)
+        self.assertEqual(sorted(res), sorted([Outcome.NEW, Outcome.DUPLICATE]))
+        self.assertEqual(len(self.all_files()), 1)
+        self.assertEqual(len(self.fetch.calls), 1)
 
     def test_higher_priority_source_takes_over(self):
         self.fetch.content["doxFAKE01"] = b"v1"

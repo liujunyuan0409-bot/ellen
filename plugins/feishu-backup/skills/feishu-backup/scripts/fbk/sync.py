@@ -5,7 +5,8 @@
 自己产生的临时文件（*.fbk-new）和刚下载、确认与已有文件内容完全相同的副本。
 
 一次运行应共用同一个 SyncContext：它记录本轮已处理的 token，用来区分
-「同一文件的第二个位置」（DUPLICATE）和「文件被移动」（MOVED）。
+「同一文件的第二个位置」（DUPLICATE）和「文件被移动」（MOVED）。去重只看本轮，
+不看清单里上一轮的来源。
 """
 import json
 import logging
@@ -33,6 +34,8 @@ PRIORITY = {"my": 0, "wiki": 1, "shared": 2}
 _TS_LEN = len("_YYYY-MM-DD_HHMM")
 # 只有这些状态的行「拥有」local_path 指向的文件
 _OWNING = ("ok", "failed", "remote_deleted")
+# 这些状态的 local_path 不属于本 token（duplicate 指向别的 token 的文件）
+_NON_OWNING = ("duplicate", "skipped")
 
 
 class Outcome(str, Enum):
@@ -47,11 +50,27 @@ class Outcome(str, Enum):
 
 @dataclass
 class SyncContext:
+    """一轮同步共用一个实例，每轮新建。
+
+    调用方约定（runner 必须遵守）：按来源严格分阶段处理 my → wiki → shared，
+    上一阶段全部 sync_item 结束后才开始下一阶段（阶段内可以并发）。
+    这样同一 token 第一次被认领的位置就是本轮优先级最高的位置，其余位置一律 DUPLICATE；
+    文件在两轮之间换了位置（包括从我的空间移到知识库）则按 MOVED/UPDATED 处理。
+    """
     client: object
     store: object
     root: Path
     fetch: object = fetcher
     done: dict = field(default_factory=dict, repr=False)  # 本轮已作为主位置处理的 token -> 优先级
+    _claim_lock: object = field(default_factory=threading.Lock, repr=False)
+
+    def claim(self, token: str, prio: int) -> bool:
+        """原子认领：本轮第一次见到（或来源优先级更高）返回 True，否则 False。"""
+        with self._claim_lock:
+            if token in self.done and prio >= self.done[token]:
+                return False
+            self.done[token] = prio
+            return True
 
 
 def _prio(source) -> int:
@@ -147,7 +166,8 @@ def _fetch_into(ctx, item, dest: Path) -> None:
 
 
 def _owns_file(row) -> Optional[Path]:
-    if row is None or row["status"] not in _OWNING or not row["local_path"]:
+    if row is None or row["status"] in _NON_OWNING or row["status"] not in _OWNING \
+            or not row["local_path"]:
         return None
     p = Path(row["local_path"])
     return p if p.is_file() else None
@@ -161,7 +181,10 @@ def sync_item(ctx: SyncContext, item) -> Outcome:
     except Exception as e:  # noqa: BLE001 —— 单个文件失败不影响整轮
         log.warning("同步失败：%s/%s（%s）", "/".join(item.rel_dir), item.name, e)
         try:
-            if ctx.store.get_item(item.token) is not None:
+            row = ctx.store.get_item(item.token)
+            if row is not None and row["status"] in _NON_OWNING:
+                pass  # 不拥有文件的行保持原状态和 local_path，绝不能变成"拥有"别人的文件
+            elif row is not None:
                 ctx.store.set_status(item.token, "failed")
             else:
                 ctx.store.upsert_item(token=item.token, type=item.type, name=item.name, source=item.source,
@@ -184,17 +207,12 @@ def _sync(ctx: SyncContext, item) -> Outcome:
     owned = _owns_file(row)
     new_prio = _prio(item.source)
 
-    # 规则 2：同一 token 的第二个位置
-    if item.token in ctx.done:
-        if new_prio >= ctx.done[item.token]:
-            if row is not None:
-                _add_seen(store, row, here)
-            return Outcome.DUPLICATE
-    elif owned is not None and _prio(row["source"]) < new_prio \
-            and json.loads(row["remote_dir"] or "[]") != list(item.rel_dir):
-        _add_seen(store, row, here)
+    # 规则 2：同一 token 本轮的第二个位置（只看本轮，原子认领）
+    if not ctx.claim(item.token, new_prio):
+        row = store.get_item(item.token)
+        if row is not None:
+            _add_seen(store, row, here)
         return Outcome.DUPLICATE
-    ctx.done[item.token] = new_prio
 
     # 内容去重得到的行：没变就继续指向已有文件
     if row is not None and row["status"] == "duplicate" and row["local_path"] \
