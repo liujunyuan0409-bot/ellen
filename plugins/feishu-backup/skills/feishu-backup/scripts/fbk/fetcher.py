@@ -1,4 +1,4 @@
-"""导出、下载、.part 临时文件、哈希、磁盘检查。只用标准库。"""
+"""导出、下载、.fbk-part 临时文件、哈希、磁盘检查。只用标准库。"""
 import hashlib
 import os
 import shutil
@@ -25,7 +25,7 @@ def ensure_space(root: Path, need_bytes: int, margin: int = 2 * 1024 ** 3) -> No
 
 
 def _atomic(dest, transfer):
-    """transfer(part_path) 写入 .part；成功后 os.replace 到 dest；任何异常都删 .part 并重抛。"""
+    """transfer(part_path) 写入 .fbk-part；成功后 os.replace 到 dest；任何异常都删 .fbk-part 并重抛。"""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".fbk-part")

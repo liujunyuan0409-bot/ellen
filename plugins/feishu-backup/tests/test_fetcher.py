@@ -129,11 +129,12 @@ class FetcherTest(unittest.TestCase):
 
     def test_clean_parts(self):
         (self.root / "a" / "b").mkdir(parents=True)
-        for rel in ["x.fbk-part", "a/y.pdf.fbk-part", "a/b/z.fbk-part", "a/keep.pdf"]:
+        for rel in ["x.fbk-part", "a/y.pdf.fbk-part", "a/b/z.fbk-part", "a/keep.pdf", "a/user.part"]:
             (self.root / rel).write_bytes(b"1")
         self.assertEqual(fetcher.clean_parts(self.root), 3)
         self.assertTrue((self.root / "a" / "keep.pdf").exists())
         self.assertFalse((self.root / "x.fbk-part").exists())
+        self.assertTrue((self.root / "a" / "user.part").exists())  # 用户真实文件不删
 
 
 if __name__ == "__main__":
