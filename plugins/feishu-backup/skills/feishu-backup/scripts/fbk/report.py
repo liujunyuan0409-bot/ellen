@@ -1,0 +1,103 @@
+"""运行报告：_报告/YYYY-MM-DD_备份日志.md。"""
+import threading
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from typing import List, Tuple
+
+from .names import SHANGHAI
+from .sync import Outcome
+
+SECTIONS = [
+    (Outcome.NEW, "新增"),
+    (Outcome.UPDATED, "更新"),
+    (Outcome.MOVED, "移动"),
+    (Outcome.DUPLICATE, "去重"),
+    (Outcome.SKIPPED, "跳过"),
+    (Outcome.FAILED, "失败"),
+]
+_LABEL = dict(SECTIONS + [(Outcome.UNCHANGED, "未变化")])
+
+
+def _fmt_time(ts) -> str:
+    return datetime.fromtimestamp(int(ts), SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _fmt_dur(sec) -> str:
+    sec = max(0, int(sec))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return "%d 小时 %d 分 %d 秒" % (h, m, s)
+    if m:
+        return "%d 分 %d 秒" % (m, s)
+    return "%d 秒" % s
+
+
+class RunReport:
+    """线程安全的运行记录。entries 只记 UNCHANGED 以外的结果。"""
+
+    def __init__(self):
+        self.counts = Counter()  # type: Counter
+        self.entries = []  # type: List[Tuple[Outcome, str, str]]
+        self.errors = []  # type: List[str]  遍历/扫描层面的错误
+        self.notes = []  # type: List[str]
+        self._lock = threading.Lock()
+
+    def add(self, outcome: Outcome, path: str, reason: str = "") -> None:
+        with self._lock:
+            self.counts[outcome] += 1
+            if outcome != Outcome.UNCHANGED:
+                self.entries.append((outcome, path, reason))
+
+    def error(self, msg: str) -> None:
+        with self._lock:
+            self.errors.append(msg)
+
+    def note(self, msg: str) -> None:
+        with self._lock:
+            self.notes.append(msg)
+
+    def summary(self) -> dict:
+        d = {_LABEL[o]: n for o, n in self.counts.items() if n}
+        d["已归档的历史版本"] = self.counts[Outcome.UPDATED]
+        d["遍历错误"] = len(self.errors)
+        return d
+
+    def write_markdown(self, path: Path, started, finished) -> Path:
+        path = Path(path)
+        lines = ["# 飞书备份日志 %s" % datetime.fromtimestamp(int(started), SHANGHAI).strftime("%Y-%m-%d"), "",
+                 "- 开始：%s" % _fmt_time(started),
+                 "- 结束：%s" % _fmt_time(finished),
+                 "- 耗时：%s" % _fmt_dur(int(finished) - int(started)),
+                 "- " + "，".join("%s %d" % (_LABEL[o], self.counts[o])
+                                  for o in [o for o, _ in SECTIONS] + [Outcome.UNCHANGED]),
+                 "- 已归档的历史版本 %d" % self.counts[Outcome.UPDATED]]
+        for n in self.notes:
+            lines.append("- %s" % n)
+        lines.append("")
+        for outcome, title in SECTIONS:
+            rows = [(p, r) for o, p, r in self.entries if o == outcome]
+            lines += ["## %s" % title, ""]
+            if not rows:
+                lines += ["无", ""]
+                continue
+            for p, r in rows:
+                lines.append("- %s%s" % (p, "：%s" % r if r else ""))
+            lines.append("")
+        lines += ["## 已归档的历史版本", ""]
+        upd = [p for o, p, _r in self.entries if o == Outcome.UPDATED]
+        if upd:
+            lines.append("以下文件的上一版已移入同目录的 `历史版本/`：")
+            lines.append("")
+            lines += ["- %s" % p for p in upd]
+        else:
+            lines.append("无")
+        lines.append("")
+        if self.errors:
+            lines += ["## 遍历与扫描错误", "", "以下位置本次没有读全，下次运行会重试；本次不标记云端已删除的文件。", ""]
+            lines += ["- %s" % e for e in self.errors]
+            lines.append("")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines), encoding="utf-8")  # 自己的输出文件，同日重跑直接覆盖
+        return path
