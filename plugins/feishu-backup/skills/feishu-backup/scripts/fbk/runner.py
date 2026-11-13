@@ -10,6 +10,7 @@ import http.client
 import json
 import logging
 import signal
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -30,6 +31,7 @@ log = logging.getLogger(__name__)
 TITLE = "飞书备份"
 MSG_LOGIN = "需要重新登录：对 Claude 说『飞书备份重新登录』"
 MSG_DISK = "备份盘空间不足"
+MSG_PERMISSION = "没有权限访问备份目录：在 系统设置 → 隐私与安全性 → 完全磁盘访问权限 里给 python3 授权"
 DOWNLOAD_WORKERS = 4
 EXPORT_WORKERS = 3
 LOG_KEEP_DAYS = 30
@@ -353,18 +355,33 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
 
     try:
         cfg = config.load_config()
+    except config.ConfigCorrupt as e:
+        log.error("%s", e)
+        notify.notify(TITLE, "配置文件损坏，需要重新设置：对 Claude 说『飞书备份设置』", key="config_missing")
+        return 2
     except config.ConfigMissing as e:
         log.error("%s", e)
         notify.notify(TITLE, "还没有完成设置：对 Claude 说『飞书备份设置』", key="config_missing")
         return 2
     root = cfg.backup_root
-    if root is None or not Path(root).is_dir():
+    try:
+        root_ok = root is not None and Path(root).is_dir()
+        if root_ok:
+            root = Path(root)
+            store = Store(root / schedule.STATE_DIR / "manifest.sqlite")
+    except PermissionError as e:
+        log.error("没有权限访问备份目录 %s：%s", root, e)
+        notify.notify(TITLE, MSG_PERMISSION, key="error")
+        return 2
+    except (OSError, sqlite3.Error) as e:
+        log.exception("打不开备份清单")
+        notify.notify(TITLE, "打不开备份清单（%s），详见日志：%s" % (e, config.LOG_DIR), key="error")
+        return 1
+    if not root_ok:
         log.warning("备份目录不存在（外接盘没插？）：%s", root)
         notify.notify(TITLE, "备份目录不存在：%s。插上备份盘后会自动继续。" % root, key="root_missing")
         return 2
-    root = Path(root)
 
-    store = Store(root / schedule.STATE_DIR / "manifest.sqlite")
     try:
         if not force and not schedule.is_due(store.last_success(), cfg.interval_hours, now):
             log.info("距上次成功不足 %s 小时，跳过", cfg.interval_hours)
@@ -374,6 +391,10 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
         except schedule.AlreadyRunning as e:
             log.info("%s", e)
             return 0
+        except PermissionError as e:
+            log.error("没有权限访问备份目录 %s：%s", root, e)
+            notify.notify(TITLE, MSG_PERMISSION, key="error")
+            return 2
         try:
             return _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit)
         finally:

@@ -372,6 +372,18 @@ class CliStatusTest(CliBase):
         self.assertEqual(d["last_success_text"], "从未成功")
         self.assertNotIn("sec_fake", out)
 
+    def test_status_with_corrupt_token_and_config(self):
+        config.CONFIG_DIR.mkdir(parents=True)
+        (config.CONFIG_DIR / "token.json").write_text("{bad", encoding="utf-8")
+        (config.CONFIG_DIR / "config.json").write_text("{bad", encoding="utf-8")
+        code, out = self.cli("status", "--json")
+        self.assertEqual(code, 0)
+        d = json.loads(out)
+        self.assertFalse(d["logged_in"])
+        self.assertFalse(d["config"])
+        code, out = self.cli("setup", "--status", "--json")
+        self.assertEqual(code, 0)
+
     def test_status_human_fresh(self):
         code, out = self.cli("status")
         self.assertEqual(code, 0)

@@ -76,6 +76,14 @@ def _cfg_or_none():
         return None
 
 
+def _token_or_none():
+    try:
+        tok = config.load_token()
+    except (OSError, ValueError):
+        return None  # 损坏的 token.json 当作未登录
+    return tok if isinstance(tok, dict) else None
+
+
 def _make_client(cfg):
     tm = auth.TokenManager(cfg)
     return FeishuClient(tm.access_token)
@@ -185,7 +193,7 @@ def _setup_steps():
     cfg = _cfg_or_none()
     steps.append(("done", "已保存 App ID：%s" % cfg.app_id) if cfg and cfg.app_secret
                  else ("todo", "运行 setup --credentials"))
-    tok = config.load_token() if (config.CONFIG_DIR / "token.json").exists() else None
+    tok = _token_or_none()
     steps.append(("done", "已登录（未联网验证）") if tok and tok.get("refresh_token") else ("todo", "运行 setup --login"))
     doc = _load_state(DOCTOR_STATE)
     if doc is None:
@@ -280,7 +288,7 @@ def _newest(d: Path, pattern):
 
 def _status_data():
     cfg = _cfg_or_none()
-    tok = config.load_token() if (config.CONFIG_DIR / "token.json").exists() else None
+    tok = _token_or_none()
     root = Path(cfg.backup_root) if cfg and cfg.backup_root else None
     d = {"config": cfg is not None, "logged_in": bool(tok and tok.get("refresh_token")),
          "backup_root": str(root) if root else None, "root_exists": bool(root and root.is_dir()),

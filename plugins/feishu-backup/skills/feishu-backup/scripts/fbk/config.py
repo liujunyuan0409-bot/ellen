@@ -13,6 +13,10 @@ class ConfigMissing(Exception):
     pass
 
 
+class ConfigCorrupt(ConfigMissing, ValueError):
+    """config.json 读得到但解析不了或缺字段：按「还没配置好」处理，提示重新设置。"""
+
+
 @dataclass
 class Config:
     app_id: str
@@ -48,15 +52,18 @@ def load_config() -> Config:
     path = CONFIG_DIR / "config.json"
     if not path.exists():
         raise ConfigMissing("未找到配置文件：%s" % path)
-    d = json.loads(path.read_text(encoding="utf-8"))
-    root = d.get("backup_root")
-    return Config(
-        app_id=d["app_id"],
-        app_secret=d["app_secret"],
-        backup_root=Path(root) if root else None,
-        interval_hours=d.get("interval_hours", 24),
-        lookback_days=d.get("lookback_days", 180),
-    )
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+        root = d.get("backup_root")
+        return Config(
+            app_id=d["app_id"],
+            app_secret=d["app_secret"],
+            backup_root=Path(root) if root else None,
+            interval_hours=int(d.get("interval_hours", 24)),
+            lookback_days=int(d.get("lookback_days", 180)),
+        )
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise ConfigCorrupt("配置文件损坏：%s（%s）" % (path, e))
 
 
 def save_config(cfg: Config) -> None:

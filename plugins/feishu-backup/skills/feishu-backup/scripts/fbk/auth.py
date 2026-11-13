@@ -247,7 +247,12 @@ class TokenManager:
 
     def access_token(self):
         with self._lock:
-            tok = config.load_token()
+            try:
+                tok = config.load_token()
+            except (OSError, ValueError) as e:
+                raise LoginRequired("登录信息文件损坏或读不了（%s），请重新登录" % e)
+            if tok is not None and not isinstance(tok, dict):
+                raise LoginRequired("登录信息文件格式不对，请重新登录")
             if not tok:
                 raise LoginRequired("尚未登录，请先运行登录")
             expires_at = tok.get("obtained_at", 0) + tok.get("expires_in", 0)

@@ -573,6 +573,50 @@ class FixRound2Test(_SharedBase):
         self.assertEqual(s.get_item(self.SH)["status"], "ok")
 
 
+class OuterFailureTest(Base):
+    """终审 I5：配置、token、清单打不开这些「主流程外」的错误也要通知，不只留 traceback。"""
+
+    def test_corrupt_config_goes_config_missing_path(self):
+        (self.cfgdir / "config.json").write_text("{not json", encoding="utf-8")
+        self.assertEqual(self.run_it(), 2)
+        self.assertEqual(self.notified_keys(), ["config_missing"])
+        self.assertIn("配置文件损坏", self.notify.call_args.args[1])
+
+    def test_config_missing_key_goes_config_missing_path(self):
+        (self.cfgdir / "config.json").write_text('{"app_id": "cli_fake"}', encoding="utf-8")
+        self.assertEqual(self.run_it(), 2)
+        self.assertEqual(self.notified_keys(), ["config_missing"])
+        self.assertIn("配置文件损坏", self.notify.call_args.args[1])
+
+    def test_corrupt_token_goes_login_path(self):
+        (self.cfgdir / "token.json").write_text('{"access_tok', encoding="utf-8")
+        self.assertEqual(self.run_it(), 3)
+        self.assertEqual(self.notified_keys(), ["login_required"])
+
+    def test_store_permission_denied_notifies_full_disk_access(self):
+        with mock.patch.object(runner, "Store", side_effect=PermissionError(1, "Operation not permitted")):
+            self.assertEqual(self.run_it(), 2)
+        self.assertEqual(self.notified_keys(), ["error"])
+        self.assertIn("完全磁盘访问权限", self.notify.call_args.args[1])
+
+    def test_root_permission_denied_notifies(self):
+        real = Path.is_dir
+
+        def is_dir(p):
+            if p == self.root:
+                raise PermissionError(1, "Operation not permitted")
+            return real(p)
+        with mock.patch.object(Path, "is_dir", is_dir):
+            self.assertEqual(self.run_it(), 2)
+        self.assertIn("完全磁盘访问权限", self.notify.call_args.args[1])
+
+    def test_store_other_open_error_notifies_error(self):
+        import sqlite3
+        with mock.patch.object(runner, "Store", side_effect=sqlite3.OperationalError("disk I/O error")):
+            self.assertEqual(self.run_it(), 1)
+        self.assertEqual(self.notified_keys(), ["error"])
+
+
 class NetworkDropTest(Base):
     """终审 I2：阶段 1 中途断网 = 离线：退出 0、不记成功、已备份的保留、不发失败通知。"""
 
