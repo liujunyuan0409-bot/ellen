@@ -94,17 +94,25 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
 </style>
 </head>
 <body>
-
+<style>
+.diff td:nth-child(3){color:var(--accent);font-weight:500}
+.os{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}
+.os .card h4{font-size:12px}
+@media (max-width:860px){.os{grid-template-columns:minmax(0,1fr)}}
+.tag{display:inline-block;font-family:var(--f-mono);font-size:11px;padding:0 6px;border-radius:4px;background:var(--accent-soft);color:var(--accent);margin-left:6px;vertical-align:2px}
+</style>
 <div class="wrap">
 <nav class="toc" aria-label="目录">
   <div class="k">目录</div>
   <ol>
+    <li><a href="#changes">v0.2 改了什么</a></li>
     <li><a href="#why">1 为什么做</a></li>
     <li><a href="#goals">2 目标与边界</a></li>
     <li><a href="#facts">3 实测结果</a></li>
     <li><a href="#approach">4 方案选择</a></li>
     <li><a href="#ux">5 用起来的样子</a></li>
     <li><a href="#detail">6 设计细节</a></li>
+      <li><a href="#calls">6.12 其他已定做法</a></li>
     <li><a href="#builder">7 留给开发时确认</a></li>
     <li><a href="#confirmed">8 已确认</a></li>
   </ol>
@@ -112,31 +120,49 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
 
 <main>
 <header class="top">
-  <div class="meta"><span>日期 <b>2026-11-13</b></span><span>插件 <b>plugins/feishu-backup/</b></span><span>平台 <b>macOS</b></span></div>
+  <div class="meta"><span>版本 <b>v0.2</b></span><span>日期 <b>2026-11-15</b></span><span>插件 <b>plugins/feishu-backup/</b></span><span>平台 <b>macOS · Windows</b></span></div>
   <h1>飞书文件自动备份 skill</h1>
-  <p class="lede">把企业飞书里能看到的文件定期备份到另一台 Mac，改过的文件自动拉新版、旧版按日期归档，并列出打不开的文件。</p>
+  <p class="lede">把企业飞书里能看到的文件每周备份到本地电脑，改过的文件自动拉新版、旧版按日期归档，并列出打不开的文件。不管是 Mac 还是 Windows、用哪个 AI 助手，把链接发给 AI 就能装好。</p>
   <p style="margin:14px 0 0"><span class="status">草稿 · 待审阅</span></p>
 </header>
+
+<section id="changes">
+  <span class="tab">v0.2</span>
+  <h2>相对 v0.1.0 改了什么</h2>
+  <div class="tablewrap"><table class="diff">
+    <thead><tr><th>项</th><th>v0.1.0</th><th>v0.2</th></tr></thead>
+    <tbody>
+      <tr><td>备份频率</td><td>每 24 小时</td><td>每周一次，默认周一 12:00，可改；错过就在下次开机后补跑；随时可手动触发</td></tr>
+      <tr><td>系统</td><td>只支持 macOS</td><td>macOS + Windows</td></tr>
+      <tr><td>AI 工具</td><td>只适配 Claude Code</td><td>任何 AI 助手：拿到 GitHub 链接就能带着完成安装和第一次使用</td></tr>
+      <tr><td>遗留小问题</td><td>2 个边缘问题未修</td><td>修掉（见 6.11）</td></tr>
+    </tbody>
+  </table></div>
+</section>
 
 <section id="why">
   <span class="tab">§1</span>
   <h2>为什么做、给谁用</h2>
   <p>一个企业飞书账号（下称<strong>备份账号</strong>）下有几千份云文档和上传文件，分散在「我的空间」、知识库和群聊里。需要做到：</p>
   <ol>
-    <li>把这些文件<strong>自动、定期</strong>备份到本地；</li>
+    <li>把这些文件<strong>自动、定期</strong>备份到本地电脑；</li>
     <li>文件在飞书上被改过，本地自动拉新版，<strong>旧版不删</strong>，按日期归档到同目录的「历史版本」文件夹；</li>
     <li>在线文档优先存 PDF，上传的原始资料保留原格式；</li>
     <li>查出备份账号打不开的文件，列出数量和能拿到的名字线索。</li>
   </ol>
-  <h3>关于「企业所有文件」</h3>
-  <p>飞书里每个成员的「我的空间」是私有的，超级管理员也无法通过接口或网页读取别人没分享的文件。选定的覆盖策略：</p>
+  <h3>谁在用<span class="tag">v0.2</span></h3>
   <ul>
-    <li><strong>以共享位置为主</strong>：公司工作文件统一放到备份账号能看到的知识库或共享文件夹。这是团队规范，需要人推动，程序负责备份备份账号能看到的一切。</li>
-    <li><strong>不做</strong>每个员工各自授权（会触及员工私人空间）。</li>
-    <li><strong>不做</strong>付费版审计（只能列清单、拿不到内容，免费版也不可用）。</li>
-    <li>权限缺口报告（§6.8）用来找出还散落在别人私人空间、但在群里出现过的文件，作为推动收拢的依据。</li>
+    <li>会有多个人用，<strong>都用同一个备份账号</strong>，每人在自己电脑上各存一份完整备份，彼此不用协调。实际上大概率只有一台电脑。</li>
+    <li>那台电脑是 Mac 还是 Windows、装的是哪个 AI 工具，<strong>现在都不知道</strong>。</li>
+    <li>使用的人<strong>没有开发背景</strong>：把 GitHub 链接发给自己的 AI 助手，由 AI 完成安装、配置和第一次备份。之后由系统定时运行，不用开着 AI。</li>
   </ul>
-  <div class="callout info"><p>运行环境：<strong>另一台 Mac，不常开机</strong>。以 Claude Code 插件分发，装好后按向导配置；日常由系统定时任务运行，不需要开着 Claude Code。</p></div>
+  <h3>关于「企业所有文件」</h3>
+  <p>飞书里每个成员的「我的空间」是私有的，超级管理员也读不到别人没分享的文件。所以：</p>
+  <ul>
+    <li><strong>以共享位置为主</strong>：公司工作文件统一放到备份账号能看到的知识库或共享文件夹（团队规范，需要人推动）。</li>
+    <li><strong>不做</strong>每个员工各自授权；<strong>不做</strong>付费版审计。</li>
+    <li>权限缺口报告用来找出还散落在别人私人空间、但在群里出现过的文件。</li>
+  </ul>
 </section>
 
 <section id="goals">
@@ -144,25 +170,25 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
   <h2>目标与边界</h2>
   <div class="grid3">
     <div class="card goal"><h4>目标</h4><ul>
-      <li>首次配置有向导：逐步指引，每步实测飞书接口，失败给出修复方法</li>
-      <li>首次配置时询问备份目录</li>
-      <li>增量备份，中断后可续跑</li>
-      <li>开机或唤醒后自动判断是否该补跑</li>
-      <li>每次运行出一份能读的报告</li>
-      <li>权限缺口清单</li>
+      <li>任何 AI 助手拿到链接，都能带不懂技术的人装好并完成第一次备份</li>
+      <li>Mac 和 Windows 行为一致，旧版都永不删除</li>
+      <li>配置向导逐步实测，失败给出修法</li>
+      <li>每周一次增量备份，错过补跑，可手动触发</li>
+      <li>每次运行一份报告，加权限缺口清单</li>
     </ul></div>
     <div class="card non"><h4>不做</h4><ul>
-      <li>全企业空间盘点（免费版没有审计日志接口）</li>
-      <li>Windows / Linux</li>
-      <li>双向同步、往飞书回写</li>
-      <li>聊天文字、日历、邮件（群里的附件要备份）</li>
-      <li>读取别人私人空间里没分享的文件</li>
+      <li>Linux；免安装打包版（以后再说）</li>
+      <li>多台电脑之间协调或合并</li>
+      <li>全企业空间盘点（免费版没有接口）</li>
+      <li>双向同步；备份聊天文字、日历、邮件</li>
+      <li>读别人私人空间里没分享的文件</li>
     </ul></div>
     <div class="card anti"><h4>做了就算失败</h4><ul>
       <li>删除或覆盖本地任何旧版本</li>
       <li>对飞书做任何写操作</li>
-      <li>把密钥、令牌、清单、备份文件推进 git 仓库</li>
-      <li>静默失败：令牌过期、盘没插、接口报错时没人知道</li>
+      <li>密钥、令牌、备份进 git，或 App Secret 经过 AI 对话</li>
+      <li>静默失败：出问题了没人知道</li>
+      <li>说明只适合 Claude，换个 AI 就装不上</li>
     </ul></div>
   </div>
 </section>
@@ -170,42 +196,25 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
 <section id="facts">
   <span class="tab">§3</span>
   <h2>实测结果</h2>
-  <p>2026-11-13 用备份账号实际调用接口得到，体积只统计、未下载。</p>
+  <p>2026-11-13～15 用备份账号实际调用接口得到。</p>
   <div class="big">
     <div><div class="n">5,746</div><div class="l">我的空间 + 知识库 文件数</div></div>
-    <div><div class="n">46.4 GB</div><div class="l">上传文件，3,542 个（精确）</div></div>
+    <div><div class="n">46.4 GB</div><div class="l">上传文件，3,542 个</div></div>
     <div><div class="n">≈ 47–50 GB</div><div class="l">首次合计，不含群聊附件</div></div>
-    <div><div class="n">318</div><div class="l">备份账号所在群（36 个外部群）</div></div>
+    <div><div class="n">8 / 8</div><div class="l">v0.1.0 冒烟体检通过</div></div>
   </div>
   <div class="tablewrap"><table>
     <thead><tr><th>项</th><th>结果</th></tr></thead>
     <tbody>
-      <tr><td>我的空间</td><td class="num">5,436 个文件 / 412 个文件夹：文档 1,382、表格 361、多维表格 27、幻灯片 2、思维笔记 14、快捷方式 125、上传文件 3,525。5,318 个归备份账号所有，都有最后修改时间</td></tr>
-      <tr><td>知识库</td><td class="num">12 个空间、310 个节点</td></tr>
       <tr><td>导出</td><td><span class="ok">✓</span> 文档→PDF　<span class="ok">✓</span> 表格→xlsx　<span class="ok">✓</span> 多维表格→xlsx　<span class="ok">✓</span> 幻灯片→PDF（单份可达 40–67 MB）</td></tr>
-      <tr><td>上传文件下载</td><td><span class="ok">✓</span> 原格式</td></tr>
-      <tr><td>判断能否打开</td><td><span class="ok">✓</span> 权限判断接口可用</td></tr>
       <tr><td>打不开的文件</td><td>飞书<strong>不返回标题和所有者</strong>，名字只能从群消息上下文推断</td></tr>
-      <tr><td>群消息</td><td class="num"><span class="ok">✓</span> 用备份账号本人身份读取，机器人不用进群。抽 30 个群 × 50 条 = 874 条消息，找到 53 个文档链接：1 个无权限，5 个已删除或无效</td></tr>
-      <tr><td>搜索</td><td><span class="ok">✓</span> 能发现部分「共享给我」的文档</td></tr>
+      <tr><td>群消息</td><td class="num">318 个群（36 个外部群）；抽样 874 条消息找到 53 个文档链接：1 个无权限，5 个已删除或无效</td></tr>
       <tr><td>审计日志</td><td><span class="no">✗</span> 免费版不可用</td></tr>
+      <tr><td>冒烟（v0.1.0）</td><td class="num">扫描 5,664 项（相差 1.4%）；试备份 20 个全部成功，再跑全部「未变化」</td></tr>
+      <tr><td>授权是累计的</td><td>程序只申请 24 项只读权限，但飞书会把这个账号以前授过的所有权限都放进令牌。要真正只读，需要先撤销应用授权再重新登录</td></tr>
     </tbody>
   </table></div>
-  <h3>上传文件体积分布</h3>
-  <div class="tablewrap"><table>
-    <thead><tr><th>类型</th><th class="num">体积</th><th class="num">个数</th></tr></thead>
-    <tbody class="num">
-      <tr><td>mov 视频</td><td>20.0 GB</td><td>222</td></tr>
-      <tr><td>psd 设计稿</td><td>14.1 GB</td><td>196</td></tr>
-      <tr><td>pdf</td><td>3.8 GB</td><td>418</td></tr>
-      <tr><td>key 幻灯片</td><td>2.0 GB</td><td>78</td></tr>
-      <tr><td>ai 设计稿</td><td>1.8 GB</td><td>250</td></tr>
-      <tr><td>jpg / png</td><td>2.0 GB</td><td>1,610</td></tr>
-      <tr><td>在线文档导出（估）</td><td>≈ 1 GB</td><td>2,064</td></tr>
-    </tbody>
-  </table></div>
-  <div class="callout"><p>建议备份盘至少留 <strong>100 GB</strong>（首次体积 × 1.5，另加群聊附件）。单个最大文件 997 MB，文件夹最深 9 层。</p></div>
-  <p>飞书应用侧已就绪：企业自建应用，免审，可用范围只有备份账号，机器人能力已开（读群消息必需），本地登录回调地址已配置。</p>
+  <div class="callout"><p>建议备份盘至少留 <strong>100 GB</strong>。</p></div>
 </section>
 
 <section id="approach">
@@ -214,9 +223,9 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
   <div class="tablewrap"><table>
     <thead><tr><th>方案</th><th>做法</th><th>取舍</th></tr></thead>
     <tbody>
-      <tr><td><span class="pill">选定</span> A. Python 单脚本 + 系统定时</td><td>一个 <code>fbk.py</code>，只用 Python 标准库直接调飞书接口；macOS 定时任务触发</td><td>新 Mac 只要有 python3，不用装任何依赖；导出、续跑、限流全部可控</td></tr>
-      <tr><td>B. 基于 lark-cli</td><td>复用现有命令行工具</td><td>本机那份是公司内部版本，新 Mac 装不到；一次只能挂一个应用</td></tr>
-      <tr><td>C. 飞书官方开源 CLI</td><td>依赖 Node + 官方 CLI</td><td>多一套运行环境；导出、下载、增量逻辑还得自己写</td></tr>
+      <tr><td><span class="pill">选定</span> A. 一套程序 + 按系统换零件 + 通用 AI 说明</td><td>核心逻辑不变；定时、通知、密码弹窗、文件锁、文件名规则各有 Mac / Windows 两份；安装说明写成任何 AI 都读得懂的 <code>AGENTS.md</code></td><td>已过 263 个测试和多轮审查的核心逻辑原样复用；两个系统都只要装好 Python</td></tr>
+      <tr><td>B. Windows 另写 PowerShell 脚本</td><td>两套代码</td><td>越改越不一致，数据安全的修复要重做一遍</td></tr>
+      <tr><td>C. 打包成免安装程序</td><td>每个系统单独打包</td><td>没签名会被 Mac 拦、Windows 弹安全警告，不懂技术的人反而卡住；以后再说</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -224,45 +233,50 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
 <section id="ux">
   <span class="tab">§5</span>
   <h2>用起来的样子</h2>
-  <h3>安装与首次配置向导</h3>
-  <p>在新 Mac 上安装插件后，对 Claude 说「配置飞书备份」。向导共 7 步，<strong>每步都实测，失败就停在这一步并告诉你怎么修</strong>。</p>
+  <h3>第一次使用：把链接发给 AI</h3>
+  <p>使用的人对自己的 AI 助手说：「帮我装一下这个，备份我们公司的飞书文件：&lt;GitHub 链接&gt;」。AI 读到仓库里的 <code>AGENTS.md</code>，按下面的顺序带着走。<strong>一次只问一个问题，用大白话，任何一步出错就照实转述修法并停下。</strong></p>
   <ol class="steps">
-    <li><span class="no-">1/7</span><div><b>环境检查</b><span class="t">python3 版本够不够，网络能不能连到飞书</span></div></li>
-    <li><span class="no-">2/7</span><div><b>应用凭证</b><span class="t">输入 App ID 和 App Secret，附带去开发者后台哪里找。实测能否换到应用令牌</span><div class="fail">常见失败：Secret 填错、应用被停用 → 给出后台链接和检查项</div></div></li>
-    <li><span class="no-">3/7</span><div><b>登录授权</b><span class="t">自动打开浏览器，用备份账号点「授权」。实测读取用户信息，显示「已登录：姓名」</span><div class="fail">常见失败：回调地址没配、端口被占、缺权限 → 列出缺哪几项</div></div></li>
-    <li><span class="no-">4/7</span><div><b>权限体检</b><span class="t">逐项实测：列我的空间、列知识库、搜索、导出一份文档、下载一个文件的 1 字节、权限判断、列群、读一条群消息。每项打 ✓ 或 ✗，✗ 写明原因和修法</span></div></li>
-    <li><span class="no-">5/7</span><div><b>备份目录</b><span class="t">询问放在哪里（建议外接盘或 ~/飞书备份）。检查能否写入、剩余空间够不够、是否在 iCloud 同步目录里</span></div></li>
-    <li><span class="no-">6/7</span><div><b>首次扫描</b><span class="t">只统计不下载：文件数、类型分布、预估体积和耗时。确认后才开始首次全量</span></div></li>
-    <li><span class="no-">7/7</span><div><b>定时任务</b><span class="t">安装系统定时任务，显示下次检查时间和卸载方法</span></div></li>
+    <li><span class="no-">0</span><div><b>准备</b><span class="t">判断是 Mac 还是 Windows；检查 Python 3.9 以上：Mac 没有就运行 <code>xcode-select --install</code>，Windows 没有就用 <code>winget install Python.Python.3.12</code>；把程序下载到固定位置（Mac <code>~/feishu-backup</code>，Windows <code>%USERPROFILE%\feishu-backup</code>）；运行 <code>install</code> 把程序复制到稳定位置</span></div></li>
+    <li><span class="no-">1/7</span><div><b>环境检查</b><span class="t">Python 版本、能否连到飞书、证书是否正常</span></div></li>
+    <li><span class="no-">2/7</span><div><b>应用凭证</b><span class="t">App ID 和 App Secret 由管理员私下发给使用者，在系统弹窗里输入，不经过 AI 对话；实测能否换到应用令牌</span></div></li>
+    <li><span class="no-">3/7</span><div><b>登录授权</b><span class="t">浏览器打开授权页，以备份账号身份点「授权」（扫码时需要备份账号的手机配合）；显示「已登录：姓名」</span></div></li>
+    <li><span class="no-">4/7</span><div><b>权限体检</b><span class="t">8 项实测：列我的空间、列知识库、搜索、发起一次导出、读一个文件的 1 字节、权限判断、列群、读一条群消息</span></div></li>
+    <li><span class="no-">5/7</span><div><b>备份目录</b><span class="t">询问放哪里；检查能否写入、剩余空间、是否在 iCloud / OneDrive 同步目录里</span></div></li>
+    <li><span class="no-">6/7</span><div><b>首次扫描</b><span class="t">只统计不下载：文件数、类型、预估体积和耗时。<strong>等用户确认</strong>后才开始</span></div></li>
+    <li><span class="no-">7/7</span><div><b>定时任务</b><span class="t">安装每周定时（默认周一 12:00），显示下次运行时间和卸载方法；询问是否现在就开始第一次备份</span></div></li>
   </ol>
-  <p>向导可以重复运行，只重做失败或指定的步骤。日常排障单独跑第 4 步体检即可（<code>fbk.py doctor</code>）。</p>
+  <h3>写给 AI 的注意事项</h3>
+  <ul>
+    <li>有的 AI 工具默认不让联网或在工作区外写文件（例如 Codex 的沙箱）：遇到网络或权限错误，先向用户申请放开，不要当成飞书故障。</li>
+    <li>登录和第一次备份耗时长：能后台运行就后台运行；不能的话告诉用户窗口别关，或指导在系统终端里运行。</li>
+    <li>输入 App Secret 的弹窗最多等 5 分钟，提醒用户留意。</li>
+    <li><strong>绝不在对话里索要、接收或复述 App Secret</strong>；用户贴进来了，就提醒去后台重置。</li>
+  </ul>
 
-  <h3>本地目录结构</h3>
+  <h3>本地目录结构（两个系统相同）</h3>
 <pre class="tree">&lt;备份根目录&gt;/
 ├── <span class="h">我的空间/</span>
 │   └── 市场部/
 │       ├── 2026 预算.xlsx
 │       ├── 品牌手册.pdf
-│       ├── 合同扫描件.zip
 │       └── <span class="h">历史版本/</span>
 │           ├── 2026 预算_2026-10-02_1530.xlsx
 │           └── 品牌手册_2026-09-18_0912.pdf
-├── <span class="h">知识库/</span>
-│   └── &lt;空间名&gt;/&lt;节点路径&gt;/...
-├── <span class="h">共享给我/</span>          <span class="c">← 群聊或搜索发现、能打开、但不在上面两处的文件</span>
-├── <span class="h">群聊附件/</span>
-│   └── &lt;群名&gt;/2026-11-13_报价单.xlsx
+├── <span class="h">知识库/</span>&lt;空间名&gt;/...
+├── <span class="h">共享给我/</span>&lt;群名&gt;/...     <span class="c">以及 共享给我/_搜索发现/</span>
+├── <span class="h">群聊附件/</span>&lt;群名&gt;/2026-11-13_报价单.xlsx
 ├── <span class="h">_报告/</span>
-│   ├── 2026-11-14_备份日志.md
-│   └── 2026-11-14_权限缺口.csv
-└── .feishu-backup/    <span class="c">← 清单与状态，随备份目录走，换电脑可整体拷走</span></pre>
+│   ├── 2026-11-17_1203_备份日志.md
+│   └── 2026-11-17_权限缺口.csv
+└── .feishu-backup/    <span class="c">← 清单存相对路径，整个文件夹拷到别处可直接续上</span></pre>
 
   <h3>日常</h3>
   <ul>
-    <li>不需要人管。出错或需要重新登录时，弹 Mac 系统通知。</li>
-    <li>说「飞书备份状态」：上次成功时间、进度、失败清单。</li>
-    <li>说「现在备份一次」：立即运行。</li>
+    <li>不用管。出错、需要重新登录、定时任务失效、连续两周没备份成功时，弹系统通知。</li>
+    <li>说「飞书备份状态」：上次成功时间、下次计划时间、失败清单、定时任务是否正常。</li>
+    <li>说「现在备份一次」：立即运行，不受每周时间限制。</li>
     <li>说「看权限缺口」：打开最新的缺口清单并总结。</li>
+    <li>说「把备份时间改成每周五晚上 8 点」：改好并重装定时任务。</li>
   </ul>
 </section>
 
@@ -274,95 +288,86 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
   <div class="tablewrap"><table>
     <thead><tr><th>文件</th><th>作用</th></tr></thead>
     <tbody>
-      <tr><td><code>SKILL.md</code></td><td>告诉 Claude 何时触发、怎么走向导、怎么解读报告和排障</td></tr>
-      <tr><td><code>scripts/fbk.py</code></td><td>唯一程序入口：<code>setup</code> <code>doctor</code> <code>login</code> <code>scan</code> <code>run</code> <code>status</code> <code>perms</code> <code>schedule</code></td></tr>
-      <tr><td><code>tests/</code></td><td>本地测试：命名、路径冲突、版本归档、只读白名单，不调真接口</td></tr>
-      <tr><td><code>README.md</code></td><td>安装、飞书后台前置配置、换电脑步骤</td></tr>
+      <tr><td><code>AGENTS.md</code>（仓库根目录）</td><td>通用 AI 安装说明入口，指向插件里的详细说明</td></tr>
+      <tr><td><code>plugins/feishu-backup/AGENTS.md</code></td><td>详细说明的唯一正本：命令、每步怎么判断成功、常见报错、日常操作</td></tr>
+      <tr><td><code>SKILL.md</code></td><td>Claude Code 的触发入口，只放触发词并指向 AGENTS.md，避免两份说明不一致</td></tr>
+      <tr><td><code>scripts/fbk.py</code></td><td>唯一程序入口：<code>install</code> <code>setup</code> <code>doctor</code> <code>login</code> <code>scan</code> <code>run</code> <code>status</code> <code>perms</code> <code>schedule</code></td></tr>
+      <tr><td><code>fbk/</code> 核心</td><td>遍历、同步、归档、去重、报告等，不随系统变化</td></tr>
+      <tr><td><code>fbk/platform/</code><span class="tag">新</span></td><td>按系统选实现：位置、定时、通知、密码弹窗、文件锁、防睡眠、文件名规则</td></tr>
     </tbody>
   </table></div>
+  <div class="os">
+    <div class="card"><h4>macOS</h4><ul>
+      <li>定时：launchd，每小时检查 + 登录时运行，用 caffeinate 防睡眠</li>
+      <li>通知：系统通知中心</li>
+      <li>密码弹窗：系统对话框</li>
+      <li>配置：<code>~/.config/feishu-backup/</code></li>
+      <li>程序副本：<code>~/Library/Application Support/feishu-backup/app/</code></li>
+    </ul></div>
+    <div class="card"><h4>Windows</h4><ul>
+      <li>定时：任务计划程序，每小时检查 + 登录时运行，错过后可用时补跑，不弹黑窗口，运行时防睡眠</li>
+      <li>通知：Windows 通知</li>
+      <li>密码弹窗：Python 自带窗口（不可用时改用 PowerShell）</li>
+      <li>配置：<code>%APPDATA%\feishu-backup\</code></li>
+      <li>程序副本：<code>%LOCALAPPDATA%\feishu-backup\app\</code></li>
+    </ul></div>
+  </div>
 
-  <h3>6.2 配置与凭证（只在本机，不进仓库）</h3>
+  <h3>6.3 调度：每周一次，错过补跑</h3>
   <ul>
-    <li><code>~/.config/feishu-backup/config.json</code>：App ID、Secret、备份目录、备份间隔（默认 24 小时）。仅本人可读。</li>
-    <li><code>~/.config/feishu-backup/token.json</code>：登录令牌，2 小时有效，自动续期。</li>
-    <li>日志在 <code>~/Library/Logs/feishu-backup/</code>，保留 30 天。</li>
-    <li>换电脑：在新 Mac 跑一遍向导；也可以从旧 Mac 拷配置文件，省掉第 2 步。</li>
+    <li>计划时间默认<strong>每周一 12:00</strong>（本机时区），可改。</li>
+    <li>定时任务每小时醒一次、开机登录时也运行一次，由程序判断：上次成功早于「最近一个已过去的周一 12:00」就跑，否则退出。周一中午电脑关着，开机后一小时内补上；一周内不会重复跑。</li>
+    <li>备份盘没插：每天最多提醒一次。没网：下个小时再试。已有一个在跑：退出。</li>
+    <li>某次有文件夹没读全：6 小时后再试，直到成功，不会每小时都扫一遍。</li>
+    <li>备份目录不存在就当作「盘没插」，<strong>绝不自己新建</strong>，避免在别处建出一棵空目录。</li>
+    <li>手动「现在备份一次」：立即运行。</li>
+    <li>每周一次意味着历史版本是每周的快照：一周内改了几次，只留备份时那一版。想更密可以改成每天，或随时手动触发。</li>
+    <li>连续错过两周：每天最多提醒一次「已经 N 天没有成功备份」。</li>
+    <li>首次全量可能跨好几次开机，每完成一个文件就记一笔，下次从断点继续。</li>
   </ul>
 
-  <h3>6.3 调度（Mac 不常开机）</h3>
+  <h3>6.4–6.5 范围、去重、格式（与 v0.1.0 相同）</h3>
   <ul>
-    <li>系统定时任务每小时醒一次，程序自己判断要不要跑：
-      <ul>
-        <li>距上次成功不到 24 小时 → 退出</li>
-        <li>备份盘没插 → 记日志，每天最多提醒一次</li>
-        <li>没网 → 下个小时再试</li>
-        <li>已经有一个在跑 → 退出</li>
-      </ul>
-    </li>
-    <li>首次全量可能跨好几次开机：每完成一个文件就记一笔，下次从断点继续。</li>
-    <li>合盖睡眠打断下载：先写临时文件，下完才改名，不会留下半截文件。</li>
+    <li>范围：我的空间、知识库、快捷方式（含指向文件夹的）、共享给我、群聊附件（文件和音视频，不含图片）。</li>
+    <li>一个文件夹读取失败不中断整次运行；没读全的那次不把任何文件标成「已删除」，也不算成功。</li>
+    <li>同一文件多处出现只存一份；内容完全相同的只存一份。</li>
+    <li>文档、幻灯片存 PDF；表格、多维表格存 xlsx；上传文件和附件保持原格式。</li>
   </ul>
 
-  <h3>6.4 备份范围</h3>
+  <h3>6.6 历史版本与文件名</h3>
+  <ul>
+    <li>飞书上改过：新版先下到临时文件，成功后把旧版移到同目录 <code>历史版本/原名_YYYY-MM-DD_HHMM</code>，再放入新版。云端删了：<strong>本地一律不删</strong>。</li>
+    <li>清单存相对路径，备份文件夹拷到别处或别的电脑能直接续上。</li>
+    <li><strong>文件名统一用两个系统都合法的写法</strong><span class="tag">v0.2</span>：<code>/ \ : * ? " &lt; &gt; |</code> 换成 <code>_</code>；去掉结尾空格和点；<code>CON</code>、<code>NUL</code> 等 Windows 保留名前面加 <code>_</code>；同名判断不区分大小写，重名时加上编号后缀。</li>
+    <li><strong>Windows 长路径</strong>：文件操作用 <code>\\?\</code> 前缀绕过 260 字符限制；向导建议把备份目录放在浅层，例如 <code>D:\飞书备份</code>。</li>
+  </ul>
+
+  <h3>6.7 只读与权限</h3>
+  <p>程序内置白名单，只允许读取类请求；登录只申请 24 项只读权限。因为授权是累计的，README 写明如何撤销授权后重新登录，得到真正只读的令牌。</p>
+
+  <h3>6.8–6.10 报告与重试（与 v0.1.0 相同）</h3>
+  <ul>
+    <li>权限缺口表：能打开 / 无权限 / 已删除或无效 / 待重试，附分享人、群名、时间。</li>
+    <li>运行报告每次一份：<code>日期_时间_备份日志.md</code>。</li>
+    <li>限流和出错自动重试；断网算离线，下个小时重试；登录失效通知重新登录；失败名单变化时才通知。</li>
+  </ul>
+
+  <h3>6.11 修掉的两个小问题<span class="tag">v0.2</span></h3>
   <ol>
-    <li><strong>我的空间</strong>：从根目录逐层往下。</li>
-    <li><strong>知识库</strong>：备份账号能看到的所有空间。带子页面的文档存成 <code>标题.pdf</code>，子页面放进同名文件夹。</li>
-    <li><strong>快捷方式</strong>：找到它指向的文件；已经在 1、2 里的跳过，否则存在快捷方式所在位置。</li>
-    <li><strong>共享给我</strong>：群里或搜索发现的、能打开但不在 1–3 里的文档，存到 <code>共享给我/&lt;群名&gt;/</code>，搜索发现的放 <code>共享给我/_搜索发现/</code>。</li>
-    <li><strong>群聊附件</strong>：所有群里的文件和音视频附件，原格式存到 <code>群聊附件/&lt;群名&gt;/</code>，文件名 <code>日期_原文件名</code>。<strong>图片不备份</strong>。</li>
+    <li>旧备份目录的路径里恰好带「知识库」等字样时，迁移会截错位置，个别文件多下一份。改为优先按记录的旧目录精确截取，否则逐个尝试，选能找到文件的那个。</li>
+    <li>更新程序副本的一瞬间，定时任务可能失败一次，正在运行的旧副本也可能被删。改为按版本分目录存放，加一个指向当前版本的小文件，旧版本等没人用了再清理。</li>
   </ol>
+</section>
 
-  <h3>6.4.1 去重</h3>
+<section id="calls">
+  <span class="tab">§6.12</span>
+  <h2>其他已定的做法</h2>
   <ul>
-    <li><strong>同一个文件出现在多处</strong>（快捷方式、多个群转发同一个链接）：只存一份，按 我的空间 › 知识库 › 共享给我 的顺序存在第一个位置，其他位置只记录「另见」。</li>
-    <li><strong>群聊附件按内容判断</strong>：内容完全相同的只存一份。</li>
-    <li><strong>是否有改动</strong>：上传文件和附件比较内容，完全相同就不归档、不覆盖；在线文档看飞书的最后修改时间（同一文档每次导出的 PDF 字节可能不同，逐字节比较不可靠）。</li>
-  </ul>
-
-  <h3>6.5 格式规则</h3>
-  <div class="tablewrap"><table>
-    <thead><tr><th>飞书类型</th><th>存成</th></tr></thead>
-    <tbody>
-      <tr><td>文档（新版、旧版）</td><td>PDF</td></tr>
-      <tr><td>幻灯片</td><td>PDF</td></tr>
-      <tr><td>电子表格</td><td>xlsx（飞书不支持表格导 PDF）</td></tr>
-      <tr><td>多维表格</td><td>xlsx</td></tr>
-      <tr><td>上传的文件、群聊附件</td><td>原文件原格式，不转换</td></tr>
-      <tr><td>思维笔记等</td><td>没有导出接口就跳过，报告里列出</td></tr>
-    </tbody>
-  </table></div>
-
-  <h3>6.6 增量与历史版本</h3>
-  <ul>
-    <li><strong>新文件</strong>：下载或导出到对应位置。</li>
-    <li><strong>飞书上改过</strong>：先把本地当前版移到同目录 <code>历史版本/</code>，改名为 <code>原名_YYYY-MM-DD_HHMM.扩展名</code>（时间取旧版在飞书上的修改时间，北京时间），再下载新版到原位置。</li>
-    <li><strong>飞书上改名或移动</strong>：本地跟着改名、移动，历史版本一起搬，不算新版本。</li>
-    <li><strong>飞书上删了，或备份账号没权限了</strong>：<strong>本地一律不删</strong>，在报告里标出。</li>
-    <li><strong>文件名</strong>：非法字符换成 <code>_</code>；同目录重名时加上编号后缀；过长截断，保留扩展名。</li>
-  </ul>
-  <div class="callout info"><p><strong>版本粒度</strong>：版本是每次备份时的快照。两次备份之间改了好几次，只留最后一版。飞书自带的版本记录只含手动保存的版本，靠不上。想要更密，把间隔调短即可。</p></div>
-  <div class="callout info"><p><strong>空间不足</strong>：每个文件写入前检查剩余空间，不够就中止这次备份并弹通知，下次从断点续跑。历史版本不设数量上限。</p></div>
-
-  <h3>6.7 只读保护</h3>
-  <p>应用开了读写权限，但程序内置白名单，只允许读取类请求：查询、下载、导出、搜索、查元数据、登录续期。其他任何请求在发出前就被拦下，并有测试覆盖。</p>
-
-  <h3>6.8 权限缺口报告</h3>
-  <ul>
-    <li>每次运行扫描所有群的新消息（记住每个群扫到哪里）；首次往回扫 180 天。</li>
-    <li>找出所有飞书文档链接，逐个判断：<span class="pill">能打开</span> <span class="pill bad">无权限</span> <span class="pill bad">已删除或无效</span></li>
-    <li>输出 <code>_报告/日期_权限缺口.csv</code>，Excel 直接打开。列：状态、类型、链接、文件名线索（消息里的标题）、分享人、群名、分享时间、首次发现日期。</li>
-    <li>顶部汇总：共发现多少链接，无权限多少，已删除多少。</li>
-    <li>报告里写明局限：只能发现出现在备份账号所在群里、或者能搜到的文件。</li>
-  </ul>
-
-  <h3>6.9 运行报告</h3>
-  <p><code>_报告/日期_备份日志.md</code>：耗时，新增、更新、改名、失败、跳过各多少；失败和跳过逐条写原因；列出归档了哪些历史版本。</p>
-
-  <h3>6.10 限流与重试</h3>
-  <ul>
-    <li>每秒最多 5 次请求；导出同时最多 3 个，下载同时最多 4 个。</li>
-    <li>飞书限流或出错时自动重试 5 次；单个文件失败不影响其他文件，下次再试。</li>
-    <li>登录失效：停止并弹通知「需要重新登录，对 Claude 说『飞书备份重新登录』」。</li>
+    <li><strong>多台电脑</strong>：每台各自登录一次，不共用登录令牌；某台令牌失效就提醒重新登录。</li>
+    <li><strong>从 v0.1.0 升级</strong>：v0.1.0 没在任何电脑上装过定时任务，不需要迁移；旧配置没有每周设置时，默认周一 12:00。</li>
+    <li><strong>仓库根目录的 AGENTS.md</strong>：只写「有哪些插件、说明在哪」，不影响仓库里其他插件。</li>
+    <li><strong>Windows 部分</strong>：都写成能在 Mac 上自动测试的形式，另附一份 Windows 真机验收清单。</li>
+    <li><strong>Windows 版未经真机验证</strong>：现在没有 Windows 电脑可测，说明文档、更新记录，以及在 Windows 上运行体检时都会明确标注这一点，并给出验收清单；等电脑确定后按清单验完再去掉。</li>
   </ul>
 </section>
 
@@ -370,13 +375,12 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
   <span class="tab">§7</span>
   <h2>留给开发时确认</h2>
   <ul>
-    <li>思维笔记有没有导出接口，没有就跳过。</li>
-    <li>登录续期令牌能撑多久不开机，向导里如实告知。</li>
-    <li>搜索接口能覆盖多少「共享给我」的文件。</li>
-    <li>群消息里文档卡片的标题在哪个字段，用于文件名线索。</li>
-    <li>过期或撤回附件的报错如何归类。</li>
-    <li>群聊附件首次体积，向导第 6 步单独估算。</li>
-    <li>首次全量的耗时估算。</li>
+    <li>Windows 通知不装额外模块能否弹出；弹不出就只写日志。</li>
+    <li>Windows 上 Python 自带的弹窗是否可用；不可用改用 PowerShell。</li>
+    <li>任务计划程序的最小配置，以及「仅登录时运行」下的稳定性。</li>
+    <li>Codex、Cursor、Gemini CLI 等读取 AGENTS.md 的方式和沙箱限制。</li>
+    <li>Windows 长路径与大小写不敏感在去重、重名判断里的处理。</li>
+    <li>思维笔记能否导出；登录续期能撑多久不开机。</li>
   </ul>
 </section>
 
@@ -385,15 +389,19 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
   <h2>已确认</h2>
   <ul class="confirm">
     <li>在线文档存 PDF，表格存 xlsx，上传文件和附件保留原格式</li>
-    <li>每 24 小时备份一次，版本是每次备份时的快照</li>
-    <li>「共享给我」的文件一起备份</li>
-    <li>群聊附件备份到 <code>群聊附件/&lt;群名&gt;/</code>，只要文件和音视频，不要图片</li>
-    <li>完全相同的文件不重复保存</li>
+    <li>「共享给我」和群聊附件（文件、音视频，不含图片）都备份；相同文件不重复保存</li>
     <li>企业覆盖靠「共享位置为主」，不做员工逐个授权</li>
+    <li>文档里不写真实应用名；不改写已推送的历史</li>
+    <li>程序登录只申请只读权限，应用本身权限不变</li>
+    <li>v0.2：每周一次，默认周一 12:00，可手动触发，错过补跑</li>
+    <li>v0.2：支持 Mac 和 Windows；多人共用一个备份账号，各存一份完整备份，大概率一台电脑</li>
+    <li>v0.2：适配任意 AI 助手完成安装和第一次使用，方案 A</li>
+    <li>v0.2：修掉 v0.1.0 遗留的两个小问题</li>
+    <li>v0.2：Windows 版标注「未经真机验证」，附验收清单</li>
   </ul>
 </section>
 
-<footer>2026-11-13 · 设计草稿，评审通过后进入实施计划</footer>
+<footer>v0.2 · 2026-11-15 · 设计草稿，评审通过后进入实施计划</footer>
 </main>
 </div>
 </body>
