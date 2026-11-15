@@ -711,6 +711,24 @@ class IncompleteRetryTest(Base):
         self.run_it(force=False, now=F + 3600)
         self.assertNotEqual(self.t.calls, [])
 
+    def _abort_does_not_block(self, why):
+        F = NOW - 86400
+        self.finished_run(False, {"中止": why}, F)
+        self.run_it(force=False, now=F + 3600)
+        self.assertNotEqual(self.t.calls, [])
+
+    def test_login_required_abort_does_not_block(self):
+        self._abort_does_not_block("login_required")
+
+    def test_disk_full_abort_does_not_block(self):
+        self._abort_does_not_block("disk_full")
+
+    def test_unexpected_error_abort_still_waits(self):
+        F = NOW - 86400
+        self.finished_run(False, {"中止": "error: boom"}, F)
+        self.run_it(force=False, now=F + 3600)
+        self.assertEqual(self.t.calls, [])
+
     def test_limit_run_records_limit_in_summary(self):
         self.assertEqual(self.run_it(limit=1), 0)
         self.assertEqual(json.loads(self.store().last_run()["summary"]).get("limit"), 1)

@@ -332,16 +332,19 @@ def _check_stale(last_success, cfg, now) -> None:
                   key="stale", now=now)
 
 
+_NO_WAIT_ABORTS = ("offline", "login_required", "disk_full")  # 不会重复一次昂贵扫描的中止
+
+
 def _waiting_retry(row, now) -> bool:
     """上次是一次真实尝试且没读全（ok=0），距今不满 6 小时 → True。
-    冒烟跑（--limit，summary 里有 limit）和离线中止不算真实尝试，不拖慢下次运行。"""
+    冒烟跑（--limit，summary 里有 limit）和离线 / 需重新登录 / 磁盘满的中止不算「没读全」，不拖慢下次运行。"""
     if row is None or row["ok"]:
         return False
     try:
         summary = json.loads(row["summary"]) if row["summary"] else {}
     except ValueError:
         summary = {}
-    if not isinstance(summary, dict) or "limit" in summary or summary.get("中止") == "offline":
+    if not isinstance(summary, dict) or "limit" in summary or summary.get("中止") in _NO_WAIT_ABORTS:
         return False
     return int(now) - int(row["finished"]) < schedule.RETRY_AFTER_INCOMPLETE
 

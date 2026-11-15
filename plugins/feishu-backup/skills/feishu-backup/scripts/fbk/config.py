@@ -1,14 +1,26 @@
 """路径、Config、token 读写。配置文件 0600，目录 0700。"""
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from .platform import paths as _paths
 
 CONFIG_DIR = _paths.config_dir()
 LOG_DIR = _paths.log_dir()
+
+
+_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def parse_time(s: str) -> Tuple[int, int]:
+    """'HH:MM' → (时, 分)；不合法抛 ValueError（中文信息）。schedule.parse_time 与加载配置共用这一套规则。"""
+    m = _TIME_RE.match((s or "").strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError("时间格式不对：%r，请写成 HH:MM，例如 12:00" % (s,))
+    return int(m.group(1)), int(m.group(2))
 
 
 class ConfigMissing(Exception):
@@ -60,9 +72,9 @@ def load_config() -> Config:
         d = json.loads(path.read_text(encoding="utf-8"))
         root = d.get("backup_root")
         wd, tm = int(d.get("schedule_weekday", 1)), str(d.get("schedule_time", "12:00"))
-        hh, _, mi = tm.partition(":")
-        if not 1 <= wd <= 7 or not (hh.isdigit() and mi.isdigit() and int(hh) < 24 and int(mi) < 60):
-            raise ValueError("计划时间不合法：weekday=%s time=%s" % (wd, tm))
+        if not 1 <= wd <= 7:
+            raise ValueError("计划星期不合法：%s（应为 1–7）" % wd)
+        parse_time(tm)
         return Config(
             app_id=d["app_id"],
             app_secret=d["app_secret"],

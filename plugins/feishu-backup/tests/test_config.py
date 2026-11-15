@@ -52,6 +52,14 @@ class ConfigTest(unittest.TestCase):
         got = config.load_config()
         self.assertEqual((got.schedule_weekday, got.schedule_time, got.interval_hours), (1, "12:00", 12))
 
+    def test_load_rejects_bad_schedule(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        for k, v in (("schedule_time", "7:5"), ("schedule_time", "24:00"), ("schedule_weekday", 8)):
+            d = {"app_id": "i", "app_secret": "s", k: v}
+            (self.dir / "config.json").write_text(json.dumps(d))
+            with self.assertRaises(config.ConfigCorrupt, msg=(k, v)):
+                config.load_config()
+
     def test_roundtrip_without_backup_root(self):
         config.save_config(config.Config(app_id="id", app_secret="sec"))
         self.assertIsNone(config.load_config().backup_root)

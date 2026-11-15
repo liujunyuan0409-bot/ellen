@@ -8,6 +8,7 @@
 import argparse
 import contextlib
 import csv
+import dataclasses
 import json
 import os
 import sys
@@ -120,9 +121,8 @@ def cmd_credentials(args):
     except wizard.Cancelled as e:
         return _checks_out(args, [wizard.Check("应用凭证", False, str(e), "重新运行 setup --credentials")], title)
     old = _cfg_or_none()
-    cfg = config.Config(app_id=app_id, app_secret=secret)
-    if old:
-        cfg.backup_root, cfg.interval_hours, cfg.lookback_days = old.backup_root, old.interval_hours, old.lookback_days
+    cfg = dataclasses.replace(old, app_id=app_id, app_secret=secret) if old else config.Config(
+        app_id=app_id, app_secret=secret)
     c = wizard.check_credentials(cfg)
     if c.ok:
         config.save_config(cfg)
@@ -332,11 +332,23 @@ def _status_data():
     d = {"config": cfg is not None, "logged_in": bool(tok and tok.get("refresh_token")),
          "backup_root": str(root) if root else None, "root_exists": bool(root and root.is_dir()),
          "last_success": None, "last_success_text": "从未成功", "last_run": None,
-         "schedule_text": _slot_text(cfg) if cfg else None,
-         "next_run_text": _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M") if cfg else None,
+         "schedule_text": None, "next_run_text": None, "schedule_problem": None,
          "schedule_installed": _plist().exists(), "schedule_problems": schedule.verify(_plist()) or [],
          "counts": {"items": {}, "attachments": {}, "links": {}},
          "reports": {"log": None, "perms": None}}
+    if cfg:
+        try:
+            d["schedule_text"] = _slot_text(cfg)
+            d["next_run_text"] = _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, IndexError) as e:
+            d["schedule_problem"] = str(e)
+    else:
+        try:
+            config.load_config()
+        except config.ConfigCorrupt as e:
+            d["schedule_problem"] = str(e)
+        except config.ConfigMissing:
+            pass
     db = root / schedule.STATE_DIR / "manifest.sqlite" if root else None
     if db and db.exists():
         store = Store(db)
@@ -373,7 +385,9 @@ def cmd_status(args):
              "备份目录：%s" % (d["backup_root"] or "未设置") +
              ("" if not d["backup_root"] or d["root_exists"] else "（不存在，外接盘没插？）"),
              "上次成功：%s" % d["last_success_text"]]
-    if d["config"]:
+    if d["schedule_problem"]:
+        lines.append("计划时间有问题：%s（请检查配置文件里的 schedule_weekday 和 schedule_time）" % d["schedule_problem"])
+    elif d["config"]:
         lines.append("下次计划：%s（%s）" % (d["schedule_text"], d["next_run_text"]))
     lines += [
              "定时任务：%s" % (("✗ 已安装但跑不了：%s。怎么办：%s" % ("；".join(d["schedule_problems"]), SCHEDULE_FIX))

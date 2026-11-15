@@ -545,6 +545,32 @@ class CliRunTest(CliBase):
         self.assertIn("每周三 08:30", out)
         self.assertEqual(config.load_config().schedule_time, "08:30")
 
+    def test_credentials_keeps_schedule(self):
+        self._cfg()
+        c = config.load_config()
+        c.schedule_weekday, c.schedule_time = 5, "20:00"
+        config.save_config(c)
+        ok = wizard.Check("应用凭证", True, "ok")
+        with mock.patch.object(wizard, "prompt_secret", return_value=("cli_new", "sec_new")), \
+                mock.patch.object(wizard, "check_credentials", return_value=ok):
+            code, _ = self.cli("setup", "--credentials")
+        self.assertEqual(code, 0)
+        got = config.load_config()
+        self.assertEqual((got.app_id, got.schedule_weekday, got.schedule_time), ("cli_new", 5, "20:00"))
+        self.assertEqual(got.backup_root, Path(self.tmp.name))
+
+    def test_status_with_bad_schedule_does_not_crash(self):
+        self._cfg()
+        path = config.CONFIG_DIR / "config.json"
+        d = json.loads(path.read_text())
+        d["schedule_time"] = "7:5"
+        path.write_text(json.dumps(d))
+        code, out = self.cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("计划时间有问题", out)
+        self.assertIn("HH:MM", out)
+        self.assertEqual(json.loads(self.cli("status", "--json")[1])["schedule_problem"].count("HH:MM"), 1)
+
     def test_setup_schedule_defaults_first_time(self):
         self._cfg()
         with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")):

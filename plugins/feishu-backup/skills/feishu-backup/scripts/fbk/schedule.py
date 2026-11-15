@@ -40,19 +40,12 @@ def default_script() -> Path:
 
 RETRY_AFTER_INCOMPLETE = 6 * 3600
 _WEEKDAYS = "一二三四五六日"
-_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_WEEKDAYS = "一二三四五六日"
+parse_time = config.parse_time  # 与加载配置共用同一套规则
 
 
 def weekday_name(weekday: int) -> str:
     return "周" + _WEEKDAYS[int(weekday) - 1]
-
-
-def parse_time(s: str) -> Tuple[int, int]:
-    """'HH:MM' → (时, 分)；不合法抛 ValueError（中文信息）。"""
-    m = _TIME_RE.match((s or "").strip())
-    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
-        raise ValueError("时间格式不对：%r，请写成 HH:MM，例如 12:00" % (s,))
-    return int(m.group(1)), int(m.group(2))
 
 
 def _last_naive(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
