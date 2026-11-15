@@ -651,7 +651,7 @@ class OuterFailureTest(Base):
 
 
 class StaleAlarmTest(Base):
-    """终审 minor：定时运行时距上次成功超过 3 × interval，每天提醒一次。"""
+    """连续错过两个计划时间点后，定时运行时提醒（每天最多一次，由 notify 的 key 限频）。"""
 
     def succeed_once(self):
         s = self.store()
@@ -659,21 +659,61 @@ class StaleAlarmTest(Base):
 
     def test_stale_scheduled_run_notifies(self):
         self.succeed_once()
-        self.assertEqual(self.run_it(force=False, now=int(time.time()) + 4 * 86400), 0)
+        self.assertEqual(self.run_it(force=False, now=int(time.time()) + 15 * 86400), 0)
         self.assertIn("stale", self.notified_keys())
         msg = [c.args[1] for c in self.notify.call_args_list if c.kwargs.get("key") == "stale"][0]
-        self.assertIn("4 天没有成功完成", msg)
+        self.assertIn("15 天没有成功完成", msg)
         self.assertIn("飞书备份状态", msg)
 
     def test_not_stale_or_manual_run_no_alarm(self):
         self.succeed_once()
-        self.run_it(force=False, now=int(time.time()) + 2 * 86400)  # 2 天 < 3 × 24 小时
-        self.run_it(force=True, now=int(time.time()) + 10 * 86400)  # --now 不报
+        self.run_it(force=False, now=int(time.time()) + 6 * 86400)  # 最多错过 1 个计划点
+        self.run_it(force=True, now=int(time.time()) + 30 * 86400)  # --now 不报
         self.assertNotIn("stale", self.notified_keys())
 
     def test_never_succeeded_no_alarm(self):
         self.run_it(force=False)
         self.assertNotIn("stale", self.notified_keys())
+
+
+class IncompleteRetryTest(Base):
+    """没读全（ok=0 的真实运行）之后，计划性运行 6 小时内不重试；--now、冒烟跑、离线中止不受影响。"""
+
+    def finished_run(self, ok, summary, finished):
+        s = self.store()
+        rid = s.start_run()
+        s.finish_run(rid, ok, summary)
+        s._write("UPDATE runs SET finished=? WHERE id=?", (finished, rid))
+
+    def test_incomplete_run_retries_after_6h(self):
+        F = NOW - 86400
+        self.finished_run(False, {"新增": 0}, F)
+        self.assertEqual(self.run_it(force=False, now=F + 5 * 3600), 0)
+        self.assertEqual(self.t.calls, [])  # 只过了 5 小时 → 跳过
+        self.assertEqual(self.run_it(force=False, now=F + 6 * 3600), 0)
+        self.assertNotEqual(self.t.calls, [])  # 满 6 小时 → 运行
+
+    def test_manual_run_ignores_retry_wait(self):
+        F = NOW - 86400
+        self.finished_run(False, {}, F)
+        self.run_it(force=True, now=F + 3600)
+        self.assertNotEqual(self.t.calls, [])
+
+    def test_smoke_run_does_not_block(self):
+        F = NOW - 86400
+        self.finished_run(False, {"limit": 3}, F)
+        self.run_it(force=False, now=F + 3600)
+        self.assertNotEqual(self.t.calls, [])
+
+    def test_offline_abort_does_not_block(self):
+        F = NOW - 86400
+        self.finished_run(False, {"中止": "offline"}, F)
+        self.run_it(force=False, now=F + 3600)
+        self.assertNotEqual(self.t.calls, [])
+
+    def test_limit_run_records_limit_in_summary(self):
+        self.assertEqual(self.run_it(limit=1), 0)
+        self.assertEqual(json.loads(self.store().last_run()["summary"]).get("limit"), 1)
 
 
 class NetworkDropTest(Base):

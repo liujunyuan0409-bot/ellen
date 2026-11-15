@@ -321,20 +321,29 @@ def _notify_failures(r) -> None:
     notify.notify_if_changed(TITLE, msg + "，详见 _报告", "run_failures", ids, now=r.now)
 
 
-STALE_FACTOR = 3
-
-
-def _check_stale(last_success, interval_hours, now) -> None:
-    """定时运行开头：距上次成功超过 3 × interval 就提醒（每天最多一次），防止静默地一直不成功。"""
-    if last_success is None:
+def _check_stale(last_success, cfg, now) -> None:
+    """定时运行开头：连续错过两个计划时间点就提醒（每天最多一次），防止静默地一直不成功。"""
+    hh, mm = schedule.parse_time(cfg.schedule_time)
+    if not schedule.is_stale(last_success, now, cfg.schedule_weekday, hh, mm):
         return
-    age = int(now) - int(last_success)
-    if age < STALE_FACTOR * int(interval_hours) * 3600:
-        return
-    days = age // 86400
+    days = (int(now) - int(last_success)) // 86400
     log.warning("已经 %d 天没有成功完成备份", days)
     notify.notify(TITLE, "飞书备份已经 %d 天没有成功完成，打开 Claude 说『飞书备份状态』看原因" % days,
                   key="stale", now=now)
+
+
+def _waiting_retry(row, now) -> bool:
+    """上次是一次真实尝试且没读全（ok=0），距今不满 6 小时 → True。
+    冒烟跑（--limit，summary 里有 limit）和离线中止不算真实尝试，不拖慢下次运行。"""
+    if row is None or row["ok"]:
+        return False
+    try:
+        summary = json.loads(row["summary"]) if row["summary"] else {}
+    except ValueError:
+        summary = {}
+    if not isinstance(summary, dict) or "limit" in summary or summary.get("中止") == "offline":
+        return False
+    return int(now) - int(row["finished"]) < schedule.RETRY_AFTER_INCOMPLETE
 
 
 def _on_term(signum, frame):
@@ -403,10 +412,14 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
     try:
         last = store.last_success()
         if not force:
-            _check_stale(last, cfg.interval_hours, now)
-        if not force and not schedule.is_due(last, cfg.interval_hours, now):
-            log.info("距上次成功不足 %s 小时，跳过", cfg.interval_hours)
-            return 0
+            _check_stale(last, cfg, now)
+            if _waiting_retry(store.last_run(), now):
+                log.info("上次没读全，6 小时内不重试，跳过")
+                return 0
+            hh, mm = schedule.parse_time(cfg.schedule_time)
+            if not schedule.is_due(last, now, cfg.schedule_weekday, hh, mm):
+                log.info("本周期已经成功备份过，跳过")
+                return 0
         try:
             lock = schedule.RunLock(root).acquire()
         except schedule.AlreadyRunning as e:
@@ -443,6 +456,8 @@ def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> i
         log_path, csv_path = _report_paths(root, now)
         gaps = perms.write_report(store, csv_path) if limit is None else {}
         summary = dict(report.summary(), **({"权限缺口": gaps} if gaps else {}))
+        if limit is not None:
+            summary["limit"] = limit  # 冒烟跑标记：不触发「没读全 6 小时重试」
         report.write_markdown(log_path, started, int(time.time()))
         # 遍历不完整也不算成功：下个小时醒来再跑（设计 §6.3）
         store.finish_run(run_id, ok=limit is None and not r.walk_errors, summary=summary)

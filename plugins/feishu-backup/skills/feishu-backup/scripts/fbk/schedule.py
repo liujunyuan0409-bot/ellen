@@ -8,8 +8,9 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from . import __version__, config
 
@@ -37,10 +38,56 @@ def default_script() -> Path:
     return Path(__file__).resolve().parent.parent / "fbk.py"
 
 
-def is_due(last_success: Optional[int], interval_hours: int, now: int) -> bool:
+RETRY_AFTER_INCOMPLETE = 6 * 3600
+_WEEKDAYS = "一二三四五六日"
+_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def weekday_name(weekday: int) -> str:
+    return "周" + _WEEKDAYS[int(weekday) - 1]
+
+
+def parse_time(s: str) -> Tuple[int, int]:
+    """'HH:MM' → (时, 分)；不合法抛 ValueError（中文信息）。"""
+    m = _TIME_RE.match((s or "").strip())
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError("时间格式不对：%r，请写成 HH:MM，例如 12:00" % (s,))
+    return int(m.group(1)), int(m.group(2))
+
+
+def _last_naive(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
+    """在本地「墙上时间」里算：避免夏令时让 7 天不等于 168 小时。"""
+    n = now.astimezone().replace(tzinfo=None)
+    cand = (n - timedelta(days=(n.isoweekday() - weekday) % 7)).replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return cand - timedelta(days=7) if cand > n else cand
+
+
+def last_slot(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
+    """≤ now 的最近一个计划时间点（本机时区，aware）。"""
+    return _last_naive(now, weekday, hh, mm).astimezone()
+
+
+def next_slot(now: datetime, weekday: int, hh: int, mm: int) -> datetime:
+    """严格大于 now 的下一个计划时间点。"""
+    return (_last_naive(now, weekday, hh, mm) + timedelta(days=7)).astimezone()
+
+
+def _dt(ts: int) -> datetime:
+    return datetime.fromtimestamp(int(ts)).astimezone()
+
+
+def is_due(last_success: Optional[int], now: int, weekday: int, hh: int, mm: int) -> bool:
     if last_success is None:
         return True
-    return int(now) - int(last_success) >= int(interval_hours) * 3600
+    return int(last_success) < last_slot(_dt(now), weekday, hh, mm).timestamp()
+
+
+def is_stale(last_success: Optional[int], now: int, weekday: int, hh: int, mm: int) -> bool:
+    """上次成功早于「往前数第二个计划时间点」（连续错过两个）。从没成功过不算。"""
+    if last_success is None:
+        return False
+    prev = _last_naive(_dt(now), weekday, hh, mm) - timedelta(days=7)
+    return int(last_success) < prev.astimezone().timestamp()
 
 
 class AlreadyRunning(Exception):

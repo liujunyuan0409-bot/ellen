@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import threading
@@ -114,6 +115,17 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(rows["L"]["status"], "readable")
         self.assertEqual(rows["L"]["kind"], "docx")
         self.assertEqual(len(rows), 2)
+
+    def test_last_run_is_latest_finished(self):
+        self.assertIsNone(self.s.last_run())
+        r1 = self.s.start_run()
+        self.s.finish_run(r1, True, {"n": 1})
+        r2 = self.s.start_run()
+        self.s.finish_run(r2, False, {"err": "x"})
+        self.s.start_run()  # 还没结束的不算
+        row = self.s.last_run()
+        self.assertEqual((row["id"], row["ok"]), (r2, 0))
+        self.assertEqual(json.loads(row["summary"]), {"err": "x"})
 
     def test_last_success_only_ok(self):
         self.assertIsNone(self.s.last_success())

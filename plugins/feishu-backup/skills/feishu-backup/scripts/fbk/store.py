@@ -220,6 +220,12 @@ class Store:
                     (int(time.time()), 1 if ok else 0,
                      json.dumps(summary, ensure_ascii=False), run_id))
 
+    def last_run(self):
+        """最近一次已结束（finished 非空）的运行；没有返回 None。"""
+        rows = self._read("SELECT id, started, finished, ok, summary FROM runs "
+                          "WHERE finished IS NOT NULL ORDER BY id DESC LIMIT 1")
+        return rows[0] if rows else None
+
     def last_success(self) -> Optional[int]:
         rows = self._read("SELECT MAX(finished) FROM runs WHERE ok=1")
         return rows[0][0] if rows and rows[0][0] is not None else None

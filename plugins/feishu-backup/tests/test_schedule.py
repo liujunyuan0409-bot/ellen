@@ -4,13 +4,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "feishu-backup" / "scripts"))
 
 from fbk import config, schedule  # noqa: E402
-from fbk.schedule import AlreadyRunning, RunLock, is_due, plist_xml  # noqa: E402
+from fbk.schedule import (AlreadyRunning, RunLock, is_due, is_stale, last_slot, next_slot,  # noqa: E402
+                          parse_time, plist_xml, RETRY_AFTER_INCOMPLETE, weekday_name)
 
 H = 3600
 NOW = 1_800_000_000
@@ -22,15 +24,66 @@ def _dead_pid() -> int:
     return p.pid
 
 
+TZ = datetime.now().astimezone().tzinfo
+
+
+def _ts(*a):
+    return int(datetime(*a, tzinfo=TZ).timestamp())
+
+
+class SlotTest(unittest.TestCase):
+    def test_last_slot_boundaries(self):
+        mon_noon = datetime(2026, 11, 16, 12, 0, tzinfo=TZ)  # 周一
+        self.assertEqual(last_slot(mon_noon, 1, 12, 0), mon_noon)
+        self.assertEqual(last_slot(mon_noon - timedelta(seconds=1), 1, 12, 0), mon_noon - timedelta(days=7))
+        self.assertEqual(last_slot(datetime(2027, 1, 1, 9, 0, tzinfo=TZ), 1, 12, 0),
+                         datetime(2026, 12, 28, 12, 0, tzinfo=TZ))  # 跨年
+        self.assertIsNotNone(last_slot(mon_noon, 1, 12, 0).tzinfo)
+
+    def test_next_slot_strictly_after(self):
+        mon_noon = datetime(2026, 11, 16, 12, 0, tzinfo=TZ)
+        self.assertEqual(next_slot(mon_noon, 1, 12, 0), mon_noon + timedelta(days=7))
+        self.assertEqual(next_slot(mon_noon - timedelta(seconds=1), 1, 12, 0), mon_noon)
+        self.assertEqual(next_slot(datetime(2026, 11, 18, 3, 0, tzinfo=TZ), 5, 20, 0),
+                         datetime(2026, 11, 20, 20, 0, tzinfo=TZ))
+
+    def test_parse_time(self):
+        self.assertEqual(parse_time("12:00"), (12, 0))
+        self.assertEqual(parse_time("7:05"), (7, 5))
+
+    def test_parse_time_rejects_bad(self):
+        for bad in ("25:00", "12", "ab", "12:60", ""):
+            with self.assertRaises(ValueError) as cm:
+                parse_time(bad)
+            self.assertIn("HH:MM", str(cm.exception))
+
+    def test_weekday_name(self):
+        self.assertEqual([weekday_name(i) for i in (1, 5, 7)], ["周一", "周五", "周日"])
+
+
 class IsDueTest(unittest.TestCase):
     def test_never_succeeded_is_due(self):
-        self.assertTrue(is_due(None, 24, NOW))
+        self.assertTrue(is_due(None, _ts(2026, 11, 18, 9), 1, 12, 0))
 
-    def test_23_hours_not_due(self):
-        self.assertFalse(is_due(NOW - 23 * H, 24, NOW))
+    def test_is_due_once_per_week(self):
+        ok = _ts(2026, 11, 16, 12, 5)  # 周一 12:05 成功
+        for now in (_ts(2026, 11, 16, 12, 6), _ts(2026, 11, 19, 8), _ts(2026, 11, 23, 11, 59)):
+            self.assertFalse(is_due(ok, now, 1, 12, 0))
+        self.assertTrue(is_due(ok, _ts(2026, 11, 23, 12, 0), 1, 12, 0))
 
-    def test_24_hours_due(self):
-        self.assertTrue(is_due(NOW - 24 * H, 24, NOW))
+    def test_missed_monday_catches_up(self):
+        ok = _ts(2026, 11, 9, 12, 5)  # 上周一成功，本周三才开机
+        self.assertTrue(is_due(ok, _ts(2026, 11, 18, 9, 0), 1, 12, 0))
+
+    def test_stale_after_two_missed_slots(self):
+        ok = _ts(2026, 11, 9, 12, 5)
+        self.assertFalse(is_stale(None, _ts(2026, 12, 1), 1, 12, 0))
+        self.assertFalse(is_stale(ok, _ts(2026, 11, 22, 9), 1, 12, 0))   # 只错过 11-16
+        self.assertFalse(is_stale(ok, _ts(2026, 11, 23, 11, 59), 1, 12, 0))
+        self.assertTrue(is_stale(ok, _ts(2026, 11, 23, 12, 0), 1, 12, 0))  # 往前第二个点 11-16 已晚于 ok
+
+    def test_retry_constant(self):
+        self.assertEqual(RETRY_AFTER_INCOMPLETE, 6 * 3600)
 
 
 _HOLDER = """

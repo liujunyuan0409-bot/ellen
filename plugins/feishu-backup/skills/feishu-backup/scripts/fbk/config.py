@@ -26,6 +26,8 @@ class Config:
     backup_root: Optional[Path] = None
     interval_hours: int = 24
     lookback_days: int = 180
+    schedule_weekday: int = 1  # ISO：1=周一 … 7=周日
+    schedule_time: str = "12:00"  # 本机时区
 
 
 def _write_private(name: str, data: dict) -> None:
@@ -57,12 +59,18 @@ def load_config() -> Config:
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
         root = d.get("backup_root")
+        wd, tm = int(d.get("schedule_weekday", 1)), str(d.get("schedule_time", "12:00"))
+        hh, _, mi = tm.partition(":")
+        if not 1 <= wd <= 7 or not (hh.isdigit() and mi.isdigit() and int(hh) < 24 and int(mi) < 60):
+            raise ValueError("计划时间不合法：weekday=%s time=%s" % (wd, tm))
         return Config(
             app_id=d["app_id"],
             app_secret=d["app_secret"],
             backup_root=Path(root) if root else None,
             interval_hours=int(d.get("interval_hours", 24)),
             lookback_days=int(d.get("lookback_days", 180)),
+            schedule_weekday=int(d.get("schedule_weekday", 1)),
+            schedule_time=str(d.get("schedule_time", "12:00")),
         )
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise ConfigCorrupt("配置文件损坏：%s（%s）" % (path, e))
@@ -75,6 +83,8 @@ def save_config(cfg: Config) -> None:
         "backup_root": str(cfg.backup_root) if cfg.backup_root else None,
         "interval_hours": cfg.interval_hours,
         "lookback_days": cfg.lookback_days,
+        "schedule_weekday": cfg.schedule_weekday,
+        "schedule_time": cfg.schedule_time,
     })
 
 

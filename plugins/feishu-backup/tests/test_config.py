@@ -39,6 +39,19 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(got.lookback_days, 180)
         self.assertIsInstance(json.loads((self.dir / "config.json").read_text())["backup_root"], str)
 
+    def test_schedule_fields_roundtrip_and_default(self):
+        self.assertEqual((config.Config("i", "s").schedule_weekday, config.Config("i", "s").schedule_time), (1, "12:00"))
+        config.save_config(config.Config("i", "s", schedule_weekday=5, schedule_time="20:30"))
+        got = config.load_config()
+        self.assertEqual((got.schedule_weekday, got.schedule_time), (5, "20:30"))
+
+    def test_old_config_without_schedule_defaults(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / "config.json").write_text(json.dumps(
+            {"app_id": "i", "app_secret": "s", "backup_root": None, "interval_hours": 12, "lookback_days": 90}))
+        got = config.load_config()
+        self.assertEqual((got.schedule_weekday, got.schedule_time, got.interval_hours), (1, "12:00", 12))
+
     def test_roundtrip_without_backup_root(self):
         config.save_config(config.Config(app_id="id", app_secret="sec"))
         self.assertIsNone(config.load_config().backup_root)

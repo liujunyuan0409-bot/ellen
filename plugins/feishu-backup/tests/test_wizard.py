@@ -522,6 +522,54 @@ class CliRunTest(CliBase):
         self.assertEqual(code, 0)
         r.assert_called_once_with(force=False, limit=None)
 
+    def _cfg(self):
+        config.save_config(config.Config("cli_fake", "sec_fake", backup_root=Path(self.tmp.name)))
+
+    def test_setup_schedule_saves_weekday_time(self):
+        self._cfg()
+        with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")):
+            code, out = self.cli("setup", "--schedule", "--weekday", "5", "--time", "20:00")
+        self.assertEqual(code, 0)
+        self.assertIn("每周五 20:00", out)
+        got = config.load_config()
+        self.assertEqual((got.schedule_weekday, got.schedule_time), (5, "20:00"))
+
+    def test_setup_schedule_keeps_existing_values(self):
+        self._cfg()
+        c = config.load_config()
+        c.schedule_weekday, c.schedule_time = 3, "08:30"
+        config.save_config(c)
+        with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")):
+            code, out = self.cli("setup", "--schedule")
+        self.assertEqual(code, 0)
+        self.assertIn("每周三 08:30", out)
+        self.assertEqual(config.load_config().schedule_time, "08:30")
+
+    def test_setup_schedule_defaults_first_time(self):
+        self._cfg()
+        with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")):
+            _, out = self.cli("setup", "--schedule")
+        self.assertIn("每周一 12:00", out)
+
+    def test_setup_schedule_bad_input_exit_1(self):
+        self._cfg()
+        with mock.patch.object(schedule, "install") as inst:
+            for argv in (("--weekday", "8"), ("--weekday", "0"), ("--time", "25:00"), ("--time", "ab")):
+                code, out = self.cli("setup", "--schedule", *argv)
+                self.assertEqual(code, 1, argv)
+        inst.assert_not_called()
+        self.assertEqual(config.load_config().schedule_weekday, 1)
+
+    def test_status_shows_next_plan(self):
+        self._cfg()
+        c = config.load_config()
+        c.schedule_weekday, c.schedule_time = 1, "12:00"
+        config.save_config(c)
+        code, out = self.cli("status")
+        self.assertIn("下次计划：每周一 12:00（", out)
+        d = json.loads(self.cli("status", "--json")[1])
+        self.assertRegex(d["next_run_text"], r"^\d{4}-\d{2}-\d{2} 12:00$")
+
     def test_schedule_uninstall(self):
         with mock.patch.object(schedule, "uninstall") as u:
             code, out = self.cli("schedule", "uninstall", "--json")

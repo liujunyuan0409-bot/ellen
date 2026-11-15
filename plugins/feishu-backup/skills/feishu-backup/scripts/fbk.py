@@ -181,17 +181,40 @@ def cmd_root(args):
     return _checks_out(args, checks, title)
 
 
+def _slot_text(cfg) -> str:
+    hh, mm = schedule.parse_time(cfg.schedule_time)
+    return "每%s %02d:%02d" % (schedule.weekday_name(cfg.schedule_weekday), hh, mm)
+
+
+def _next_run_dt(cfg) -> datetime:
+    hh, mm = schedule.parse_time(cfg.schedule_time)
+    return schedule.next_slot(datetime.now().astimezone(), cfg.schedule_weekday, hh, mm)
+
+
 def cmd_schedule_install(args, title="[7/7] 定时任务"):
     cfg = _cfg_or_none()
     if cfg is None or not cfg.backup_root:
         return _fail(args, "还没设置备份目录", "先完成 setup --credentials 和 setup --root")
+    wd, tm = getattr(args, "weekday", None), getattr(args, "time", None)
+    try:
+        if wd is not None and not 1 <= wd <= 7:
+            raise ValueError("星期不对：%s，请写 1–7（1=周一 … 7=周日）" % wd)
+        if tm is not None:
+            schedule.parse_time(tm)
+    except ValueError as e:
+        return _fail(args, str(e), "例如：setup --schedule --weekday 1 --time 12:00")
+    if wd is not None or tm is not None:
+        if wd is not None:
+            cfg.schedule_weekday = wd
+        if tm is not None:
+            cfg.schedule_time = "%02d:%02d" % schedule.parse_time(tm)
+        config.save_config(cfg)
     try:
         path = schedule.install()
     except Exception as e:  # noqa: BLE001
         return _checks_out(args, [wizard.Check("定时任务", False, "安装失败：%s" % e, "把这一行发给 Claude 排查")], title)
-    now = int(time.time())
-    detail = "已安装（%s）。马上会检查一次，之后每小时检查一次；距上次成功满 %d 小时才真正备份。下次检查约 %s" % (
-        path, cfg.interval_hours, _fmt_ts(now + schedule.START_INTERVAL))
+    detail = "已安装（%s）。计划：%s（本机时区），每周一次；电脑关机错过了，下次开机会自动补跑。下次计划：%s" % (
+        path, _slot_text(cfg), _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M"))
     fix = "卸载：python3 %s schedule uninstall；插件更新后请重新运行 setup --schedule" % schedule.default_script()
     c = wizard.Check("定时任务", True, detail, fix)
     if args.json:
@@ -309,6 +332,8 @@ def _status_data():
     d = {"config": cfg is not None, "logged_in": bool(tok and tok.get("refresh_token")),
          "backup_root": str(root) if root else None, "root_exists": bool(root and root.is_dir()),
          "last_success": None, "last_success_text": "从未成功", "last_run": None,
+         "schedule_text": _slot_text(cfg) if cfg else None,
+         "next_run_text": _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M") if cfg else None,
          "schedule_installed": _plist().exists(), "schedule_problems": schedule.verify(_plist()) or [],
          "counts": {"items": {}, "attachments": {}, "links": {}},
          "reports": {"log": None, "perms": None}}
@@ -347,7 +372,10 @@ def cmd_status(args):
              "登录：%s" % ("已登录" if d["logged_in"] else "未登录（运行 setup --login）"),
              "备份目录：%s" % (d["backup_root"] or "未设置") +
              ("" if not d["backup_root"] or d["root_exists"] else "（不存在，外接盘没插？）"),
-             "上次成功：%s" % d["last_success_text"],
+             "上次成功：%s" % d["last_success_text"]]
+    if d["config"]:
+        lines.append("下次计划：%s（%s）" % (d["schedule_text"], d["next_run_text"]))
+    lines += [
              "定时任务：%s" % (("✗ 已安装但跑不了：%s。怎么办：%s" % ("；".join(d["schedule_problems"]), SCHEDULE_FIX))
                               if d["schedule_problems"] else ("已安装" if d["schedule_installed"] else "未安装"))]
     if d["last_run"]:
@@ -410,6 +438,8 @@ def build_parser():
     g.add_argument("--login", action="store_true", help="[3/7] 浏览器登录授权")
     g.add_argument("--root", metavar="PATH", help="[5/7] 设置备份目录")
     g.add_argument("--schedule", action="store_true", help="[7/7] 安装定时任务")
+    s.add_argument("--weekday", type=int, default=None, help="配合 --schedule：星期几（1=周一 … 7=周日，默认保持现有，初次为 1）")
+    s.add_argument("--time", default=None, help="配合 --schedule：几点（HH:MM，本机时区，默认保持现有，初次为 12:00）")
     g.add_argument("--status", action="store_true", help="显示每一步是否完成（不联网）")
     s.add_argument("--create", action="store_true", help="配合 --root：目录不存在时新建")
     s.set_defaults(func=cmd_setup)
