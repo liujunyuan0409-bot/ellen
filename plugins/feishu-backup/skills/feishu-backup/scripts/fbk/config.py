@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-CONFIG_DIR = Path.home() / ".config" / "feishu-backup"
-LOG_DIR = Path.home() / "Library" / "Logs" / "feishu-backup"
+from .platform import paths as _paths
+
+CONFIG_DIR = _paths.config_dir()
+LOG_DIR = _paths.log_dir()
 
 
 class ConfigMissing(Exception):
