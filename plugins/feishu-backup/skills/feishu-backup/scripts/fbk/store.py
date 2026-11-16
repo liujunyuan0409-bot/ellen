@@ -98,7 +98,7 @@ class Store:
         """旧清单里的绝对路径改成相对路径（幂等，每次打开都检查）。顺序：
         1) 在当前根目录下就直接截；2) meta 记录的旧根目录精确前缀截取；
         3) 没记录时，在每个程序自有顶层目录出现的位置各截一次，选第一个在当前根目录下真实存在的；
-        4) 都不存在时用最后一次出现的位置。截不出的原样保留。"""
+        4) 都不存在时用第一次出现的位置（同 v0.1）。截不出的原样保留。"""
         row = self._conn.execute("SELECT value FROM meta WHERE key='root'").fetchone()
         old_root = row[0] if row else None
         for table, pk in _PATH_TABLES:
@@ -109,7 +109,7 @@ class Store:
                 if rel is None:
                     cands = _cut_candidates(p)
                     if cands:
-                        rel = next((c for c in cands if self._exists_rel(c)), cands[-1])
+                        rel = next((c for c in cands if self._exists_rel(c)), cands[0])
                 if rel is not None:
                     self._conn.execute("UPDATE %s SET local_path=? WHERE %s=?" % (table, pk), (rel, key))
 

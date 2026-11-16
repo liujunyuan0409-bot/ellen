@@ -48,7 +48,7 @@ class StoreTest(unittest.TestCase):
         old = "/Volumes/旧盘/飞书备份"
         c = sqlite3.connect(str(self.db))
         c.execute("insert into items (token, status, local_path) values ('t1', 'ok', ?)",
-                  (old + "/我的空间/x/周报.pdf",))
+                  (old + "/我的空间/x/我的空间.pdf",))
         c.execute("insert into items (token, status, local_path) values ('t2', 'ok', ?)",
                   (str(self.root / "知识库" / "库" / "y.pdf"),))
         c.execute("insert into items (token, status, local_path) values ('t3', 'ok', '/elsewhere/z.pdf')")
@@ -61,10 +61,10 @@ class StoreTest(unittest.TestCase):
         self.s = Store(self.db)
         raw = lambda q: [r[0] for r in self.s._conn.execute(q)]  # noqa: E731
         self.assertEqual(raw("select local_path from items order by token"),
-                         ["我的空间/x/周报.pdf", "知识库/库/y.pdf", "/elsewhere/z.pdf"])
+                         ["我的空间/x/我的空间.pdf", "知识库/库/y.pdf", "/elsewhere/z.pdf"])
         self.assertEqual(raw("select local_path from blobs"), ["共享给我/群/b.zip"])
         self.assertEqual(raw("select local_path from attachments"), ["群聊附件/群/2025-01-01_a.txt"])
-        self.assertEqual(self.s.get_item("t1")["local_path"], str(self.root / "我的空间" / "x" / "周报.pdf"))
+        self.assertEqual(self.s.get_item("t1")["local_path"], str(self.root / "我的空间" / "x" / "我的空间.pdf"))
         self.assertEqual(self.s.get_item("t3")["local_path"], "/elsewhere/z.pdf")
 
     def _seed_old(self, rows, meta_root=None):
@@ -100,14 +100,19 @@ class StoreTest(unittest.TestCase):
         get = self._seed_old([("t1", old + "/我的空间/a/b.pdf")])
         self.assertEqual(get("t1"), "我的空间/a/b.pdf")
 
-    def test_migration_without_meta_nothing_exists_uses_last_occurrence(self):
+    def test_migration_without_meta_nothing_exists_uses_first_cut(self):
         old = "/Volumes/知识库备份/飞书"
         get = self._seed_old([("t1", old + "/我的空间/a/b.pdf")])
         self.assertEqual(get("t1"), "我的空间/a/b.pdf")
 
-    def test_migration_without_meta_nothing_exists_last_cut(self):
+    def test_migration_without_meta_nothing_exists_multi_candidate_first_cut(self):
         get = self._seed_old([("t1", "/old/我的空间/x/知识库/y.pdf")])
-        self.assertEqual(get("t1"), "知识库/y.pdf")
+        self.assertEqual(get("t1"), "我的空间/x/知识库/y.pdf")
+
+    def test_cut_candidates_are_whole_segments_only(self):
+        from fbk.store import _cut_candidates
+        self.assertEqual(_cut_candidates("/old/我的空间/x/我的空间.pdf"), ["我的空间/x/我的空间.pdf"])
+        self.assertEqual(_cut_candidates("/old/我的空间备份/知识库2/a.pdf"), [])
 
     def test_meta_root_updated_after_migration(self):
         self._seed_old([], meta_root="/somewhere/else")
