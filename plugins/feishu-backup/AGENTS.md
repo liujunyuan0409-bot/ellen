@@ -54,11 +54,12 @@
      - `~/feishu-backup` 不在 → `git clone https://github.com/liujunyuan0409-bot/ellen.git ~/feishu-backup`（上一步装的开发者工具里带了 git）。
    - 没有 git 时下载压缩包（每次解压到一个新建的临时文件夹；`unzip -o` 不会停下来问要不要覆盖；最后一步要求 `~/feishu-backup` 已经不存在，否则新文件夹会被塞进旧文件夹里）：
      ```
-     T=$(mktemp -d)
-     curl -L -o "$T/feishu-backup.zip" https://github.com/liujunyuan0409-bot/ellen/archive/refs/heads/main.zip
-     unzip -o -q "$T/feishu-backup.zip" -d "$T"
+     T=$(mktemp -d) && \
+     curl -fL -o "$T/feishu-backup.zip" https://github.com/liujunyuan0409-bot/ellen/archive/refs/heads/main.zip && \
+     unzip -o -q "$T/feishu-backup.zip" -d "$T" && \
      mv "$T/ellen-main" ~/feishu-backup
      ```
+     `curl -f`：下载地址出错（如 404）时直接报错退出，不会把错误页当成压缩包；`&&` 让前一步失败时后面几步不再执行。
 3. **安装程序副本**：`python3 ~/feishu-backup/plugins/feishu-backup/skills/feishu-backup/scripts/fbk.py install --json`
    - 成功：退出码 0，JSON 里 `"ok": true`，`launcher` 是 `~/Library/Application Support/feishu-backup/app/launch.py`。从现在起用 `<fbk>`。
    - 失败：输出里有 ✗ 和「怎么办」，原样转述。
@@ -85,6 +86,7 @@
      Expand-Archive -Path "$T\feishu-backup.zip" -DestinationPath $T -Force
      Move-Item "$T\ellen-main" "$env:USERPROFILE\feishu-backup"
      ```
+     `Invoke-WebRequest` 遇到 404 等 HTTP 错误会直接报红色错误；**任何一行报错就停下**，把报错原样告诉用户，不要接着运行后面几行。
 3. **安装程序副本**：`py -3 "$env:USERPROFILE\feishu-backup\plugins\feishu-backup\skills\feishu-backup\scripts\fbk.py" install --json`
    - 成功：退出码 0，`"ok": true`，`launcher` 在 `%LOCALAPPDATA%\feishu-backup\app\launch.py`。从现在起用 `<fbk>`。
    - 输出里中文是乱码：程序在 Windows 上默认按 UTF-8 输出；你的工具若按 GBK 读，就在同一个窗口先运行 `$env:PYTHONIOENCODING = "gbk:replace"` 再重跑（✓ ✗ 会变成 `?`，看 `--json` 里的 `ok` 判断即可）。
