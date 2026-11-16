@@ -292,6 +292,18 @@ class EnvTest(unittest.TestCase):
         self.assertIn("更新 Python 或检查公司代理证书", c.fix)
         self.assertNotIn("Install Certificates", c.fix)
 
+    def test_old_python_fix_per_os(self):
+        # v0.2：修复说明按系统给（mac 用 xcode-select，Windows 用 winget），不再提 brew
+        with mock.patch.object(wizard, "MIN_PY", (99, 0)):
+            mac = wizard.check_env(connect=lambda a, timeout: mock.MagicMock(), tls_handshake=self.OK_TLS,
+                                   is_windows=False)[0]
+            win = wizard.check_env(connect=lambda a, timeout: mock.MagicMock(), tls_handshake=self.OK_TLS,
+                                   is_windows=True)[0]
+        self.assertFalse(mac.ok)
+        self.assertIn("xcode-select --install", mac.fix)
+        self.assertIn("winget install Python.Python.3.12", win.fix)
+        self.assertNotIn("brew", mac.fix + win.fix)
+
     def test_other_tls_error_keeps_net_mapping(self):
         def reset(host):
             raise ssl.SSLError("handshake failure")
@@ -797,3 +809,13 @@ class CliRunTest(CliBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AiAgnosticTextTest(unittest.TestCase):
+    """v0.2：使用者可能用任何 AI 助手，面向用户的提示里不写死 Claude。"""
+
+    def test_no_claude_in_user_facing_code(self):
+        base = Path(wizard.__file__).resolve().parent
+        files = list(base.rglob("*.py")) + [base.parent / "fbk.py"]
+        hits = [str(f) for f in files if "Claude" in f.read_text(encoding="utf-8")]
+        self.assertEqual(hits, [])

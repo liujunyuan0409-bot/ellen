@@ -643,6 +643,14 @@ class OuterFailureTest(Base):
         self.assertEqual(self.notified_keys(), ["error"])
         self.assertIn("完全磁盘访问权限", self.notify.call_args.args[1])
 
+    def test_permission_denied_message_on_windows(self):
+        with mock.patch.object(runner, "Store", side_effect=PermissionError(1, "denied")), \
+                mock.patch.object(runner.schedule, "IS_WINDOWS", True):
+            self.assertEqual(self.run_it(), 2)
+        msg = self.notify.call_args.args[1]
+        self.assertIn("属性 → 安全", msg)
+        self.assertNotIn("完全磁盘访问权限", msg)
+
     def test_root_permission_denied_notifies(self):
         real = Path.is_dir
 

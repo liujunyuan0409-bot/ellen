@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""飞书备份唯一入口。由 Claude Code（Bash，非交互）和定时任务（经程序副本的 launch.py 运行 run）调用。
+"""飞书备份唯一入口。由 AI 助手（非交互地运行命令）和定时任务（经程序副本的 launch.py 运行 run）调用。
 
 子命令：install / setup / doctor / login / scan / run / status / perms / schedule。
 每个命令都打印中文说明；加 --json 时输出机器可读的 JSON。
@@ -206,7 +206,7 @@ def cmd_install(args):
     try:
         launcher = schedule.install_app()
     except Exception as e:  # noqa: BLE001
-        return _checks_out(args, [wizard.Check("程序副本", False, "复制失败：%s" % e, "把这一行发给 Claude 排查")])
+        return _checks_out(args, [wizard.Check("程序副本", False, "复制失败：%s" % e, "把这一行发给你的 AI 助手排查")])
     app_dir = launcher.parent / "versions" / schedule.__version__
     data = {"ok": True, "launcher": str(launcher), "app_dir": str(app_dir), "version": schedule.__version__}
     text = ("程序副本已复制好（版本 %s）：%s\n启动器：%s\n"
@@ -237,7 +237,7 @@ def cmd_schedule_install(args, title="[7/7] 定时任务"):
     try:
         path = schedule.install()
     except Exception as e:  # noqa: BLE001
-        return _checks_out(args, [wizard.Check("定时任务", False, "安装失败：%s" % e, "把这一行发给 Claude 排查")], title)
+        return _checks_out(args, [wizard.Check("定时任务", False, "安装失败：%s" % e, "把这一行发给你的 AI 助手排查")], title)
     detail = "已安装（%s）。计划：%s（错过会在开机后补跑），本机时区。下次计划：%s" % (
         path, _slot_text(cfg), _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M"))
     fix = "卸载：%s schedule uninstall；插件更新后请重新运行 setup --schedule" % _launch_cmd()

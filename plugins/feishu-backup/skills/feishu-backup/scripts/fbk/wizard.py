@@ -74,6 +74,8 @@ def gb(n) -> str:
 
 # ---------------- [1/7] 环境 ----------------
 
+PY_FIX_MAC = "需要 Python 3.9 或更高：在「终端」里运行 xcode-select --install，装完后重试"
+PY_FIX_WIN = "需要 Python 3.9 或更高：运行 winget install Python.Python.3.12，装完后重新打开窗口再试"
 CERT_FIX_MAC = "运行 /Applications/Python 3.x/Install Certificates.command（x 换成你装的版本号），然后重试"
 CERT_FIX_WIN = "更新 Python 或检查公司代理证书"
 
@@ -99,8 +101,10 @@ def _tls_handshake(host: str, connect: Callable = socket.create_connection,
 def check_env(connect: Callable = socket.create_connection, tls_handshake: Optional[Callable] = None,
               is_windows: Optional[bool] = None) -> List[Check]:
     v = sys.version_info
-    py = Check("Python 版本", tuple(v[:2]) >= MIN_PY, "当前 %d.%d.%d" % (v[0], v[1], v[2]),
-               "" if tuple(v[:2]) >= MIN_PY else "需要 Python 3.9 或更高：在终端运行 brew install python3 后重试")
+    win = _plat.IS_WINDOWS if is_windows is None else is_windows
+    py_ok = tuple(v[:2]) >= MIN_PY
+    py = Check("Python 版本", py_ok, "当前 %d.%d.%d" % (v[0], v[1], v[2]),
+               "" if py_ok else (PY_FIX_WIN if win else PY_FIX_MAC))
     try:
         s = connect((FEISHU_HOST, 443), timeout=5)
         try:
@@ -110,7 +114,6 @@ def check_env(connect: Callable = socket.create_connection, tls_handshake: Optio
         net = Check("网络", True, "能连上 %s" % FEISHU_HOST)
     except OSError:
         return [py, Check("网络", False, NET_DETAIL, NET_FIX)]
-    win = _plat.IS_WINDOWS if is_windows is None else is_windows
     try:
         (tls_handshake or _tls_handshake)(FEISHU_HOST)
         cert = Check("证书", True, "能和 %s 建立加密连接" % FEISHU_HOST)
@@ -178,8 +181,8 @@ def explain(e: Exception, default_scope: str = "") -> Tuple[str, str]:
         if e.code in _TOKEN_CODES:
             return "登录令牌无效（错误码 %s）" % e.code, LOGIN_FIX
         return ("飞书返回错误 code=%s：%s" % (e.code, e.msg),
-                "稍后重试；仍失败就把这一行发给 Claude 排查")
-    return "意外错误：%s" % e, "把这一行发给 Claude 排查"
+                "稍后重试；仍失败就把这一行发给你的 AI 助手排查")
+    return "意外错误：%s" % e, "把这一行发给你的 AI 助手排查"
 
 
 def _check(name: str, scope: str, fn) -> Check:

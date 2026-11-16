@@ -30,9 +30,14 @@ from .sync import Outcome
 log = logging.getLogger(__name__)
 
 TITLE = "飞书备份"
-MSG_LOGIN = "需要重新登录：对 Claude 说『飞书备份重新登录』"
+MSG_LOGIN = "需要重新登录：对你的 AI 助手说『飞书备份重新登录』"
 MSG_DISK = "备份盘空间不足"
 MSG_PERMISSION = "没有权限访问备份目录：在 系统设置 → 隐私与安全性 → 完全磁盘访问权限 里给 python3 授权"
+MSG_PERMISSION_WIN = "没有权限访问备份目录：在文件夹上点右键 → 属性 → 安全，确认自己有「修改」权限，或换一个目录"
+
+
+def _msg_permission() -> str:
+    return MSG_PERMISSION_WIN if schedule.IS_WINDOWS else MSG_PERMISSION
 DOWNLOAD_WORKERS = 4
 EXPORT_WORKERS = 3
 LOG_KEEP_DAYS = 30
@@ -329,7 +334,7 @@ def _check_stale(last_success, cfg, now) -> None:
         return
     days = (int(now) - int(last_success)) // 86400
     log.warning("已经 %d 天没有成功完成备份", days)
-    notify.notify(TITLE, "飞书备份已经 %d 天没有成功完成，打开 Claude 说『飞书备份状态』看原因" % days,
+    notify.notify(TITLE, "飞书备份已经 %d 天没有成功完成，对你的 AI 助手说『飞书备份状态』看原因" % days,
                   key="stale", now=now)
 
 
@@ -390,11 +395,11 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
         cfg = config.load_config()
     except config.ConfigCorrupt as e:
         log.error("%s", e)
-        notify.notify(TITLE, "配置文件损坏，需要重新设置：对 Claude 说『飞书备份设置』", key="config_missing")
+        notify.notify(TITLE, "配置文件损坏，需要重新设置：对你的 AI 助手说『飞书备份设置』", key="config_missing")
         return 2
     except config.ConfigMissing as e:
         log.error("%s", e)
-        notify.notify(TITLE, "还没有完成设置：对 Claude 说『飞书备份设置』", key="config_missing")
+        notify.notify(TITLE, "还没有完成设置：对你的 AI 助手说『飞书备份设置』", key="config_missing")
         return 2
     root = cfg.backup_root
     try:
@@ -404,7 +409,7 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
             store = Store(root / schedule.STATE_DIR / "manifest.sqlite")
     except PermissionError as e:
         log.error("没有权限访问备份目录 %s：%s", root, e)
-        notify.notify(TITLE, MSG_PERMISSION, key="error")
+        notify.notify(TITLE, _msg_permission(), key="error")
         return 2
     except (OSError, sqlite3.Error) as e:
         log.exception("打不开备份清单")
@@ -433,7 +438,7 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
             return 0
         except PermissionError as e:
             log.error("没有权限访问备份目录 %s：%s", root, e)
-            notify.notify(TITLE, MSG_PERMISSION, key="error")
+            notify.notify(TITLE, _msg_permission(), key="error")
             return 2
         try:
             with awake.keep_awake():
