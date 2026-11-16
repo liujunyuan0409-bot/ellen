@@ -43,7 +43,11 @@ class FakeWidget:
     def lift(self): pass
     def focus_force(self): self.tk.focused = True
     def focus_set(self): pass
-    def grab_set(self): self.tk.grabbed = True
+    def grab_set(self):
+        if self.tk.grab_fail > 0:
+            self.tk.grab_fail -= 1
+            raise RuntimeError("window not viewable")
+        self.tk.grabbed = True
 
     def after(self, ms, fn):
         self.tk.after_calls.append((ms, fn))
@@ -68,6 +72,7 @@ class FakeTk:
         self.script, self.text = script, text
         self.widgets, self.after_calls = [], []
         self.focused = self.grabbed = self.quit_called = self.waited = False
+        self.grab_fail = 0
 
     def Tk(self):
         return FakeWidget(self, "root")
@@ -120,15 +125,51 @@ class WindowsTkTest(unittest.TestCase):
         return pp.ask("请输入", hidden, is_windows=True, tk_factory=lambda: fk)
 
     def test_ok_hidden_topmost_grab(self):
-        fk = FakeTk(click("确定"), text="secret1")
+        def script(f):
+            f.after_calls[1][1]()  # mainloop 里先跑抢焦点回调
+            click("确定")(f)
+        fk = FakeTk(script, text="secret1")
         self.assertEqual(self.run_ask(fk), "secret1")
         self.assertEqual(fk.find("entry")[0].kw["show"], "*")
         top = fk.find("top")[0]
         self.assertTrue(top.attrs["-topmost"])
-        self.assertTrue(fk.grabbed and fk.focused and fk.waited)
-        self.assertEqual(fk.after_calls[0][0], 300000)
+        self.assertTrue(fk.grabbed and fk.focused)
+        self.assertFalse(fk.waited)  # 绝不调 wait_visibility（可能永远阻塞）
+        self.assertEqual(fk.after_calls[0][0], 300000)  # 超时定时器先挂上
+        self.assertEqual(fk.after_calls[1][0], 0)       # 抢焦点排在它后面、跑在 mainloop 里
         self.assertTrue(all(w.destroyed for w in fk.widgets if w.kind in ("root", "top")))
         self.assertTrue(fk.find("root")[0].withdrawn)
+
+    def test_no_focus_or_grab_before_mainloop(self):
+        seen = {}
+
+        def script(f):
+            seen.update(grabbed=f.grabbed, focused=f.focused, waited=f.waited)
+            click("取消")(f)
+        with self.assertRaises(wizard.Cancelled):
+            self.run_ask(FakeTk(script, text="x"))
+        self.assertEqual(seen, {"grabbed": False, "focused": False, "waited": False})
+
+    def test_grab_failure_retries_then_gives_up_quietly(self):
+        def script(f):
+            f.grab_fail = 99
+            f.after_calls[1][1]()  # 第一次失败 -> 排重试
+            self.assertEqual(f.after_calls[2][0], 50)
+            f.after_calls[2][1]()
+            click("确定")(f)
+        fk = FakeTk(script, text="v")
+        self.assertEqual(self.run_ask(fk), "v")
+        self.assertFalse(fk.grabbed)
+
+    def test_grab_retry_succeeds_when_window_maps(self):
+        def script(f):
+            f.grab_fail = 1
+            f.after_calls[1][1]()
+            f.after_calls[2][1]()
+            click("确定")(f)
+        fk = FakeTk(script, text="v")
+        self.run_ask(fk)
+        self.assertTrue(fk.grabbed)
 
     def test_visible_entry(self):
         fk = FakeTk(click("确定"), text="cli_x")

@@ -91,15 +91,23 @@ def _ask_tk(prompt, hidden, tk_factory):
         top.bind("<Return>", ok)
         top.bind("<Escape>", cancel)
         top.protocol("WM_DELETE_WINDOW", cancel)
-        root.after(DIALOG_TIMEOUT * 1000, on_timeout)
-        top.lift()
-        top.focus_force()
-        entry.focus_set()
-        try:
-            top.wait_visibility()
-            top.grab_set()
-        except Exception:  # noqa: BLE001 —— 抢不到焦点不影响使用
-            pass
+        root.after(DIALOG_TIMEOUT * 1000, on_timeout)  # 先挂上超时定时器，再安排抢焦点
+
+        def grab_focus(tries=0):
+            # 不用 wait_visibility()：窗口一直不显示时它会永远阻塞，而超时定时器只在 mainloop 里才走。
+            # 放进 mainloop 的回调里做；窗口还没映射时 grab_set 会报错，隔 50ms 重试几次，抢不到也不影响使用。
+            try:
+                top.lift()
+                top.focus_force()
+                entry.focus_set()
+                top.grab_set()
+            except Exception:  # noqa: BLE001
+                if tries < 20:
+                    try:
+                        root.after(50, lambda: grab_focus(tries + 1))
+                    except Exception:  # noqa: BLE001
+                        pass
+        root.after(0, grab_focus)
         root.mainloop()
     finally:
         for w in (locals().get("top"), root):
