@@ -66,6 +66,25 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.s.get_item("t1")["local_path"], str(self.root / "我的空间" / "x" / "我的空间.pdf"))
         self.assertEqual(self.s.get_item("t3")["local_path"], "/elsewhere/z.pdf")
 
+    def test_long_path_prefix_never_stored(self):
+        # 文件操作用的 \\?\ 前缀路径就算误传进来，清单里也只存不带前缀的相对路径
+        p = self.root / "我的空间" / "a" / "周报.pdf"
+        self.s.upsert_item(token="t1", status="ok", local_path="\\\\?\\" + str(p))
+        self.s.add_blob("h", "\\\\?\\" + str(p))
+        raw = lambda q: self.s._conn.execute(q).fetchone()[0]  # noqa: E731
+        self.assertEqual(raw("select local_path from items"), "我的空间/a/周报.pdf")
+        self.assertEqual(raw("select local_path from blobs"), "我的空间/a/周报.pdf")
+
+    def test_file_ops_go_through_lp(self):
+        from fbk import store as store_mod
+        from tests.fakes import LpSpy
+        spy = LpSpy()
+        (self.root / "sub").mkdir()
+        with spy.patch(store_mod):
+            Store(self.root / "sub" / ".feishu-backup" / "m.sqlite").close()
+        self.assertEqual(spy.bad, [])
+        self.assertEqual(spy.ops.get("makedirs"), 1)
+
     def test_missing_root_raises(self):
         with self.assertRaises(FileNotFoundError):
             Store(self.root / "nope" / ".feishu-backup" / "m.sqlite")

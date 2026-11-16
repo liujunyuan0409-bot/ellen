@@ -1,10 +1,13 @@
 """SQLite 清单：记录每个文件的备份状态，支持中断后续跑。线程安全。"""
 import json
+import os
 import sqlite3
 import threading
 import time
 from pathlib import Path, PurePosixPath
 from typing import Optional, Set
+
+from .platform.fsnames import lp, strip_lp
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -49,11 +52,13 @@ class Store:
     这样整个备份目录被复制或搬到别处（换电脑、换外接盘）后，清单依然对得上，不会重新下载、也不会搬动旧副本。"""
 
     def __init__(self, db_path: Path):
-        db_path = Path(db_path)
-        if not db_path.parent.parent.exists():
+        db_path = Path(strip_lp(db_path))
+        if not os.path.isdir(lp(db_path.parent.parent)):
             raise FileNotFoundError(str(db_path.parent.parent))
         self.root = db_path.parent.parent
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        os.makedirs(lp(db_path.parent), exist_ok=True)
+        # 清单在 根目录/.feishu-backup/ 下，路径很短，不加 \\?\ 前缀：SQLite 自己拼 -wal/-shm 文件名，
+        # 交给它普通路径最稳
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -97,6 +102,7 @@ class Store:
     def to_stored(self, p) -> Optional[str]:
         if p is None:
             return None
+        p = strip_lp(p)  # 清单里绝不存 \\?\ 前缀
         if not Path(p).is_absolute():
             return Path(p).as_posix()
         return self._rel_under_root(p) or str(p)

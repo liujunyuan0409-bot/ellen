@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "feishu-backup" / "scripts"))
 
 from fbk.names import local_filename, sanitize, unique_path  # noqa: E402
-from fbk.platform.fsnames import RESERVED, clean_component, fold, lp  # noqa: E402
+from fbk.platform.fsnames import RESERVED, clean_component, fold, lp, strip_lp  # noqa: E402
 
 
 class CleanComponentTest(unittest.TestCase):
@@ -60,6 +60,11 @@ class LongPathTest(unittest.TestCase):
         # \\?\ 关掉了系统的路径规整，这里必须先规整好
         self.assertEqual(lp("C:/a/./b/../c", is_windows=True), "\\\\?\\C:\\a\\c")
         self.assertEqual(lp(r"C:\飞书备份\我的空间", is_windows=True), "\\\\?\\C:\\飞书备份\\我的空间")
+
+    def test_strip_lp_roundtrip(self):
+        for raw in (r"C:\a\b", r"\\srv\share\x"):
+            self.assertEqual(strip_lp(lp(raw, is_windows=True)), raw)
+        self.assertEqual(strip_lp("/tmp/x"), "/tmp/x")
 
     def test_path_object_and_mac_identity(self):
         p = Path("/Users/fake/飞书备份/a.pdf")

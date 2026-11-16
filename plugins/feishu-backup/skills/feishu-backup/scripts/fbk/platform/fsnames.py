@@ -66,6 +66,16 @@ def lp(p: Union[str, Path], is_windows: Optional[bool] = None) -> str:
     return _PREFIX + s
 
 
+def strip_lp(p: Union[str, Path]) -> str:
+    """去掉 lp() 加的前缀，还原成普通路径字符串（写进清单、做比较前用）。"""
+    s = str(p)
+    if s.startswith(_UNC_PREFIX):
+        return "\\\\" + s[len(_UNC_PREFIX):]
+    if s.startswith(_PREFIX):
+        return s[len(_PREFIX):]
+    return s
+
+
 def _listdir(d: Path) -> Iterable[str]:
     try:
         return os.listdir(lp(d))
