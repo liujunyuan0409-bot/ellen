@@ -235,8 +235,11 @@ def cmd_schedule_install(args, title="[7/7] 定时任务"):
         return _fail(args, "还没设置备份目录", "先完成 setup --credentials 和 setup --root")
     wd, tm = getattr(args, "weekday", None), getattr(args, "time", None)
     try:
-        if wd is not None and not 1 <= wd <= 7:
-            raise ValueError("星期不对：%s，请写 1–7（1=周一 … 7=周日）" % wd)
+        if wd is not None:
+            w = str(wd).strip()
+            if not (w.isdigit() and w.isascii() and 1 <= int(w) <= 7):
+                raise ValueError("星期不对：%s，请写 1–7（1=周一 … 7=周日）" % wd)
+            wd = int(w)
         if tm is not None:
             schedule.parse_time(tm)
     except ValueError as e:
@@ -510,7 +513,7 @@ def build_parser():
     g.add_argument("--login", action="store_true", help="[3/7] 浏览器登录授权")
     g.add_argument("--root", metavar="PATH", help="[5/7] 设置备份目录")
     g.add_argument("--schedule", action="store_true", help="[7/7] 安装定时任务")
-    s.add_argument("--weekday", type=int, default=None, help="配合 --schedule：星期几（1=周一 … 7=周日，默认保持现有，初次为 1）")
+    s.add_argument("--weekday", default=None, help="配合 --schedule：星期几（1=周一 … 7=周日，默认保持现有，初次为 1）")
     s.add_argument("--time", default=None, help="配合 --schedule：几点（HH:MM，本机时区，默认保持现有，初次为 12:00）")
     g.add_argument("--status", action="store_true", help="显示每一步是否完成（不联网）")
     s.add_argument("--create", action="store_true", help="配合 --root：目录不存在时新建")

@@ -770,9 +770,14 @@ class CliRunTest(CliBase):
     def test_setup_schedule_bad_input_exit_1(self):
         self._cfg()
         with mock.patch.object(schedule, "install") as inst:
-            for argv in (("--weekday", "8"), ("--weekday", "0"), ("--time", "25:00"), ("--time", "ab")):
+            for argv in (("--weekday", "8"), ("--weekday", "0"), ("--time", "25:00"), ("--time", "ab"),
+                         ("--weekday", "abc"), ("--weekday", "周一"), ("--weekday", "1.5")):
                 code, out = self.cli("setup", "--schedule", *argv)
                 self.assertEqual(code, 1, argv)
+                self.assertIn("✗", out, argv)
+                self.assertNotIn("invalid", out, argv)
+                if argv[0] == "--weekday":
+                    self.assertIn("1–7", out, argv)
         inst.assert_not_called()
         self.assertEqual(config.load_config().schedule_weekday, 1)
 
