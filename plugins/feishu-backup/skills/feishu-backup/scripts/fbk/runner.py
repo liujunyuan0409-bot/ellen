@@ -22,6 +22,7 @@ from typing import Optional
 from . import auth, chats, config, fetcher, notify, perms, schedule, sync, walker
 from .client import DEFAULT_BASE, ApiError, FeishuClient, default_transport
 from .names import SHANGHAI
+from .platform import awake
 from .report import RunReport
 from .store import Store
 from .sync import Outcome
@@ -357,6 +358,8 @@ def install_term_handler() -> None:
     """launchd 在关机/注销时发 SIGTERM：转成 SystemExit，让 finally（释放锁、关清单）都能执行。
     只能在主线程调用（fbk.py run 入口）。"""
     signal.signal(signal.SIGTERM, _on_term)
+    if hasattr(signal, "SIGBREAK"):  # Windows 关机 / 关控制台
+        signal.signal(signal.SIGBREAK, _on_term)
 
 
 def _probe(transport, token: str) -> None:
@@ -433,7 +436,8 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
             notify.notify(TITLE, MSG_PERMISSION, key="error")
             return 2
         try:
-            return _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit)
+            with awake.keep_awake():
+                return _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit)
         finally:
             lock.release()
     finally:

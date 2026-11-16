@@ -1,6 +1,4 @@
 """调度：是否到期、运行锁、LaunchAgent 安装与卸载。"""
-import errno
-import fcntl
 import os
 import plistlib
 import re
@@ -13,6 +11,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from . import __version__, config
+from .platform import fsnames, lock as _lock
 
 LABEL = "local.feishu-backup"
 START_INTERVAL = 3600
@@ -88,7 +87,7 @@ class AlreadyRunning(Exception):
 
 
 class RunLock:
-    """root/.feishu-backup/run.lock 上的 fcntl.flock 排他锁，整轮运行期间持有。
+    """root/.feishu-backup/run.lock 上的排他锁（posix flock / Windows msvcrt.locking），整轮运行期间持有。
 
     锁由内核随进程退出（含被 SIGTERM/SIGKILL 杀掉、关机）自动释放，所以不会有「死锁文件」挡住
     以后的备份。文件里的 PID 只供人看，不参与判断；锁文件本身不删除（删了会让两个进程锁住不同的文件）。
@@ -107,15 +106,16 @@ class RunLock:
 
     def acquire(self):
         self.path.parent.mkdir(exist_ok=True)  # root 必须已存在，这里不建 root
-        fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o644)
+        fd = os.open(fsnames.lp(self.path), os.O_RDWR | os.O_CREAT, 0o644)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as e:
+            got = _lock.try_lock(fd)
+        except BaseException:
             os.close(fd)
-            if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
-                pid = self._holder()
-                raise AlreadyRunning("已有备份进程在运行%s" % ("（PID %d）" % pid if pid else ""))
             raise
+        if not got:
+            os.close(fd)
+            pid = self._holder()
+            raise AlreadyRunning("已有备份进程在运行%s" % ("（PID %d）" % pid if pid else ""))
         os.ftruncate(fd, 0)
         os.write(fd, ("%d\n" % self.pid).encode())
         self._fd = fd
@@ -130,7 +130,7 @@ class RunLock:
         except OSError:
             pass
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _lock.unlock(fd)
         finally:
             os.close(fd)
 
