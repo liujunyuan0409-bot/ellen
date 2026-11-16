@@ -47,13 +47,17 @@
    - 输出 `Python 3.9` 或更高 → 通过。
    - 提示找不到命令、弹出「需要安装命令行开发者工具」、或版本低于 3.9 → 请用户在「终端」里运行 `xcode-select --install`，在弹出的系统窗口里点「安装」，等它装完（可能十几分钟到半小时），再运行一次 `python3 --version`。
 2. **取得程序**：
-   - 先看 `~/feishu-backup` 在不在。已经在（以前装过）→ 运行 `git -C ~/feishu-backup pull` 更新。
-   - 不在 → `git clone https://github.com/liujunyuan0409-bot/ellen.git ~/feishu-backup`（上一步装的开发者工具里带了 git）。
-   - 没有 git 时下载压缩包：
+   - 你自己的工作区里**已经有本仓库**（例如用户让你 clone 过、或正打开着它）→ 可以直接用那一份的 `plugins/feishu-backup/skills/feishu-backup/scripts/fbk.py` 做下面第 3 步的 `install`，不用再下载一份；`install` 之后一律用启动器，和仓库放在哪无关。
+   - 否则看 `~/feishu-backup/.git` 在不在（`test -d ~/feishu-backup/.git && echo git`）：
+     - 在（以前用 git 装过）→ `git -C ~/feishu-backup pull`。
+     - `~/feishu-backup` 在、但没有 `.git`（以前下载压缩包装的）→ 先把旧文件夹**改名留着**（不要删）：`mv ~/feishu-backup ~/feishu-backup.old-$(date +%Y%m%d%H%M%S)`，再按下面两种办法之一重新取。
+     - `~/feishu-backup` 不在 → `git clone https://github.com/liujunyuan0409-bot/ellen.git ~/feishu-backup`（上一步装的开发者工具里带了 git）。
+   - 没有 git 时下载压缩包（每次解压到一个新建的临时文件夹；`unzip -o` 不会停下来问要不要覆盖；最后一步要求 `~/feishu-backup` 已经不存在，否则新文件夹会被塞进旧文件夹里）：
      ```
-     curl -L -o ~/Downloads/feishu-backup.zip https://github.com/liujunyuan0409-bot/ellen/archive/refs/heads/main.zip
-     unzip -q ~/Downloads/feishu-backup.zip -d ~/Downloads/feishu-backup-zip
-     mv ~/Downloads/feishu-backup-zip/ellen-main ~/feishu-backup
+     T=$(mktemp -d)
+     curl -L -o "$T/feishu-backup.zip" https://github.com/liujunyuan0409-bot/ellen/archive/refs/heads/main.zip
+     unzip -o -q "$T/feishu-backup.zip" -d "$T"
+     mv "$T/ellen-main" ~/feishu-backup
      ```
 3. **安装程序副本**：`python3 ~/feishu-backup/plugins/feishu-backup/skills/feishu-backup/scripts/fbk.py install --json`
    - 成功：退出码 0，JSON 里 `"ok": true`，`launcher` 是 `~/Library/Application Support/feishu-backup/app/launch.py`。从现在起用 `<fbk>`。
@@ -68,13 +72,18 @@
    - 提示找不到命令，或出现「Python was not found; run without arguments to install from the Microsoft Store」（这是系统自带的占位程序，不是真的 Python）→ 运行 `winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements`（你代为运行，或请用户在 PowerShell 里运行；中途可能弹出「是否允许更改」，请用户点「是」）。**装完要关掉并重新打开 PowerShell 窗口**（你自己的工具也可能要重开会话）才认得新装的 Python，然后再检查一次。
    - 没有 `winget`（较老的 Windows 10）→ 请用户到 https://www.python.org/downloads/ 下载安装包，安装时**勾选「Add python.exe to PATH」**，其他选项保持默认（默认会装 tcl/tk，输入凭证的小窗口要用它）。
 2. **取得程序**：
-   - `$env:USERPROFILE\feishu-backup` 已存在 → `git -C "$env:USERPROFILE\feishu-backup" pull`。
-   - 不存在且有 git（`git --version` 能输出版本）→ `git clone https://github.com/liujunyuan0409-bot/ellen.git "$env:USERPROFILE\feishu-backup"`。
-   - 没有 git：
+   - 你自己的工作区里**已经有本仓库** → 可以直接用那一份的 `plugins\feishu-backup\skills\feishu-backup\scripts\fbk.py` 做第 3 步的 `install`，不用再下载。
+   - 否则看 `Test-Path "$env:USERPROFILE\feishu-backup\.git"`：
+     - `True`（以前用 git 装过）→ `git -C "$env:USERPROFILE\feishu-backup" pull`。
+     - `False` 但 `$env:USERPROFILE\feishu-backup` 存在（以前下载压缩包装的）→ 先把旧文件夹**改名留着**（不要删）：`Rename-Item "$env:USERPROFILE\feishu-backup" ("feishu-backup.old-" + (Get-Date -Format yyyyMMddHHmmss))`，再按下面两种办法之一重新取。
+     - 文件夹不存在且有 git（`git --version` 能输出版本）→ `git clone https://github.com/liujunyuan0409-bot/ellen.git "$env:USERPROFILE\feishu-backup"`。
+   - 没有 git（每次解压到一个新建的临时文件夹；最后一步要求 `$env:USERPROFILE\feishu-backup` 已经不存在）：
      ```
-     Invoke-WebRequest -Uri https://github.com/liujunyuan0409-bot/ellen/archive/refs/heads/main.zip -OutFile "$env:TEMP\feishu-backup.zip"
-     Expand-Archive -Path "$env:TEMP\feishu-backup.zip" -DestinationPath "$env:TEMP\feishu-backup-zip" -Force
-     Move-Item "$env:TEMP\feishu-backup-zip\ellen-main" "$env:USERPROFILE\feishu-backup"
+     $T = Join-Path $env:TEMP ("feishu-backup-" + (Get-Date -Format yyyyMMddHHmmss))
+     New-Item -ItemType Directory -Path $T | Out-Null
+     Invoke-WebRequest -Uri https://github.com/liujunyuan0409-bot/ellen/archive/refs/heads/main.zip -OutFile "$T\feishu-backup.zip"
+     Expand-Archive -Path "$T\feishu-backup.zip" -DestinationPath $T -Force
+     Move-Item "$T\ellen-main" "$env:USERPROFILE\feishu-backup"
      ```
 3. **安装程序副本**：`py -3 "$env:USERPROFILE\feishu-backup\plugins\feishu-backup\skills\feishu-backup\scripts\fbk.py" install --json`
    - 成功：退出码 0，`"ok": true`，`launcher` 在 `%LOCALAPPDATA%\feishu-backup\app\launch.py`。从现在起用 `<fbk>`。
@@ -176,7 +185,7 @@
 | 把备份时间改成每周五晚上 8 点 | `<fbk> setup --schedule --weekday 5 --time 20:00` | 讲清新的计划和下次时间。如果上一个计划时间点之后还没备份过，改完不久就会补一次。 |
 | 飞书备份重新登录 | `<fbk> login`（**后台**，同 [3/7]） | 提醒用户去浏览器用备份账号点授权。 |
 | 飞书备份体检 / 备份有问题 | `<fbk> doctor` | 按 ✓/✗ 转述，✗ 原样给「怎么办」。 |
-| 更新飞书备份 | mac `git -C ~/feishu-backup pull`，Windows `git -C "$env:USERPROFILE\feishu-backup" pull`（下载 zip 的就重新下载覆盖）；然后运行 install 之前那条 `fbk.py install`，再 `<fbk> setup --schedule` | 新版程序装好，定时任务也换成新版。 |
+| 更新飞书备份 | 按第 0 步「取得程序」做：有 `.git` 就 `git -C … pull`；是下载压缩包装的，就把旧的 `feishu-backup` 文件夹改名留着、再按那里的命令重新下载解压（不要直接解压到旧文件夹上）。然后运行 install 之前那条 `fbk.py install`，再 `<fbk> setup --schedule` | 新版程序装好，定时任务也换成新版。 |
 | 卸载飞书备份 | `<fbk> schedule uninstall` | 只停了定时任务，备份文件一个没删。还想清掉本机配置的话，按 README「卸载」请用户自己删；不要替用户删备份文件夹。 |
 
 报告在哪：`<备份目录>/_报告/YYYY-MM-DD_HHMM_备份日志.md`（每次运行一份）、`<备份目录>/_报告/YYYY-MM-DD_权限缺口.csv`（Excel 可直接打开）。
