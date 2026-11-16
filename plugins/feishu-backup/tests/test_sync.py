@@ -624,6 +624,21 @@ class SyncTest(unittest.TestCase):
         for tok, want in (("doxcnA1111", b"a"), ("doxcnA2222", b"b")):
             self.assertEqual(Path(self.store.get_item(tok)["local_path"]).read_bytes(), want)
 
+    def test_symlink_to_own_file_at_desired_name_counts_as_taken(self):
+        # 用户在目标位置放了一个指向本 token 现有文件的符号链接：它是用户的条目，不能被替换
+        self.fetch.content["doxFAKE01"] = b"mine"
+        sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "旧")))
+        cur = self.root / "我的空间" / "旧" / "手册.pdf"
+        new = self.root / "我的空间" / "新"
+        new.mkdir(parents=True)
+        os.symlink(str(cur), str(new / "手册.pdf"))
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "新"))), Outcome.MOVED)
+        self.assertTrue(os.path.islink(str(new / "手册.pdf")))
+        self.assertEqual(os.readlink(str(new / "手册.pdf")), str(cur))
+        self.assertEqual((new / "手册 (doxFAK).pdf").read_bytes(), b"mine")
+        self.assertFalse(os.path.islink(str(new / "手册 (doxFAK).pdf")))
+
     def test_all_file_ops_go_through_lp(self):
         """sync / fetcher 里的 os.replace / unlink / makedirs 都必须用 lp() 处理过的路径。"""
         spy = LpSpy()
