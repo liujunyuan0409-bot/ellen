@@ -353,8 +353,9 @@ def _finish(app_root: Path, version: str) -> Path:
 
 
 def _same_dir(a: Path, b: Path) -> bool:
+    """b 是真实目录（不是符号链接 / 目录联接）且和 a 是同一个目录。b 是链接时要换成真副本，不能跳过。"""
     try:
-        return os.path.lexists(lp(b)) and os.path.samefile(lp(a), lp(b))
+        return _is_real_dir(b) and os.path.samefile(lp(a), lp(b))
     except OSError:
         return False
 

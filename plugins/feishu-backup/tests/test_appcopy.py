@@ -188,6 +188,17 @@ class CleanupTest(Base):
         self.assertEqual([p.name for p in (self.root / "versions").iterdir()], ["1.0.0"])
         self.assertIsNone(appcopy.verify(self.root, "1.0.0"))
 
+    def test_symlinked_target_is_replaced_by_real_copy(self):
+        # 再审 2：versions/<v> 是指向源码的符号链接时，不能当成「从副本里安装」跳过
+        src = make_src(self.base, "1.0.0")
+        (self.root / "versions").mkdir(parents=True)
+        os.symlink(str(src), str(self.root / "versions" / "1.0.0"))
+        appcopy.install(src, self.root, "1.0.0")
+        target = self.root / "versions" / "1.0.0"
+        self.assertFalse(target.is_symlink())
+        self.assertTrue((target / "fbk.py").is_file())
+        self.assertTrue((src / "fbk.py").is_file())  # 链接指向的源码不受影响
+
     def test_different_content_same_version_still_swaps(self):
         appcopy.install(make_src(self.base, "1.0.0", main="OLD"), self.root, "1.0.0")
         appcopy.install(make_src(self.base / "again", "1.0.0", main="NEW"), self.root, "1.0.0")
