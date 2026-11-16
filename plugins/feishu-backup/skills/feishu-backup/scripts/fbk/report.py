@@ -99,5 +99,16 @@ class RunReport:
             lines += ["- %s" % e for e in self.errors]
             lines.append("")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(lines), encoding="utf-8")  # 文件名带时分，每次运行一份
-        return path
+        data = "\n".join(lines).encode("utf-8")
+        # 文件名带时分，每次运行一份；同一分钟内再跑（例如手动连跑两次）不覆盖上一份，
+        # 改名为 …_HHMM（2）_备份日志.md（「（」排在「_」之后，按文件名排序时新的一份仍在最后）
+        stem, sep, tail = path.name.rpartition("_")
+        n = 1
+        while True:
+            cand = path if n == 1 else path.with_name("%s（%d）%s%s" % (stem, n, sep, tail))
+            try:
+                with open(cand, "xb") as f:
+                    f.write(data)
+                return cand
+            except FileExistsError:
+                n += 1

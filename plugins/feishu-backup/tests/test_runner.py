@@ -125,6 +125,17 @@ class EndToEndTest(Base):
         self.assertEqual(sorted(p.name for p in (self.root / "_报告").iterdir()),
                          ["2026-03-01_1000_备份日志.md", "2026-03-01_1105_备份日志.md", "2026-03-01_权限缺口.csv"])
 
+    def test_same_minute_rerun_keeps_both_run_reports(self):
+        # 真机冒烟（v0.2.0）：同一分钟内跑两次，第二份备份日志曾覆盖第一份
+        self.preset_drive()
+        self.assertEqual(self.run_it(), 0)
+        first = (self.root / "_报告" / "2026-03-01_1000_备份日志.md").read_text(encoding="utf-8")
+        self.assertEqual(self.run_it(now=NOW + 30), 0)
+        logs = sorted(p.name for p in (self.root / "_报告").glob("*_备份日志.md"))
+        self.assertEqual(logs, ["2026-03-01_1000_备份日志.md", "2026-03-01_1000（2）_备份日志.md"])
+        self.assertEqual((self.root / "_报告" / logs[0]).read_text(encoding="utf-8"), first)
+        self.assertEqual(self.report_text(), (self.root / "_报告" / logs[1]).read_text(encoding="utf-8"))
+
     def _copy_and_rerun(self, delete_old):
         import shutil
         self.preset_drive()
