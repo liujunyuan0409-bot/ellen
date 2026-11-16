@@ -1,7 +1,9 @@
 """同步引擎：新增 / 更新归档 / 改名移动 / 去重 / 缺失标记。
 
 铁律：本地已有的版本文件永不删除、永不覆盖。旧版只会被 os.replace 移进
-同目录的 历史版本/（目标名已存在时用 unique_path 换名）。本模块只会删除
+同目录的 历史版本/（目标名已存在时用 unique_path 换名）。「已存在 / 被占用」不区分大小写
+（同目录有只差大小写的文件也算占用）。所有系统文件操作都用 lp(路径)（Windows 长路径），
+程序内部比较和写进清单的路径不带前缀。本模块只会删除
 自己产生的临时文件（*.fbk-new）和刚下载、确认与已有文件内容完全相同的副本。
 
 一次运行应共用同一个 SyncContext：它记录本轮已处理的 token，用来区分
@@ -22,6 +24,7 @@ from typing import Optional
 from . import fetcher
 from .auth import LoginRequired, NetworkError
 from .names import MAX_FS_BYTES, _fit, local_filename, unique_path, version_name
+from .platform.fsnames import is_taken, lp
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +81,11 @@ def _prio(source) -> int:
 
 
 def _exists(p: Path) -> bool:
-    return os.path.lexists(str(p))
+    return os.path.lexists(lp(p))
+
+
+def _is_file(p: Path) -> bool:
+    return os.path.isfile(lp(p))
 
 
 def _tmp_for(p: Path, token: str) -> Path:
@@ -89,8 +96,8 @@ def _tmp_for(p: Path, token: str) -> Path:
 
 def _drop_tmp(p: Path) -> None:
     """只删本模块自己的临时文件。"""
-    if p.name.endswith(TMP_SUFFIX) and p.is_file():
-        p.unlink()
+    if p.name.endswith(TMP_SUFFIX) and _is_file(p):
+        os.unlink(lp(p))
 
 
 def archive_current(local: Path, old_mtime: int) -> Path:
@@ -98,25 +105,25 @@ def archive_current(local: Path, old_mtime: int) -> Path:
     local = Path(local)
     hist = local.parent / HISTORY_DIR
     with _PLACE_LOCK:
-        hist.mkdir(parents=True, exist_ok=True)
+        os.makedirs(lp(hist), exist_ok=True)
         dest = unique_path(hist / version_name(local.name, int(old_mtime)))
-        os.replace(str(local), str(dest))
+        os.replace(lp(local), lp(dest))
     return dest
 
 
 def _choose_path(desired: Path, token: str, cur: Optional[Path] = None) -> Path:
     """desired 空着就用；被别的文件占了就用「名字 (token前6位).扩展名」，再冲突追加 -2、-3。
-    cur（本 token 现有文件）出现在候选序列里时原地不动，保证每轮结果稳定。"""
+    占用判断不区分大小写；cur（本 token 现有文件）不算占用，出现在候选序列里时原地不动，保证每轮结果稳定。"""
     if cur is not None and desired == cur:
         return cur
-    if not _exists(desired):
+    if not is_taken(desired, cur):
         return desired
     alt = desired.with_name(_fit(desired.stem, " (%s)%s" % (token[:6], desired.suffix), MAX_FS_BYTES))
     cand, n = alt, 1
     while True:
         if cur is not None and cand == cur:
             return cur
-        if not _exists(cand):
+        if not is_taken(cand, cur):
             return cand
         n += 1
         cand = alt.with_name(_fit(alt.stem, "-%d%s" % (n, alt.suffix), MAX_FS_BYTES))
@@ -132,23 +139,24 @@ def _version_stem(filename: str) -> str:
 def _move_history(old: Path, new: Path) -> None:
     """把 old 的历史版本（原名_YYYY-MM-DD_HHMM[-N].扩展名）搬到 new 所在目录的 历史版本/，并换成新主干。"""
     old_hist = old.parent / HISTORY_DIR
-    if not old_hist.is_dir():
+    if not os.path.isdir(lp(old_hist)):
         return
     old_ext = os.path.splitext(old.name)[1]
     new_stem, new_ext = os.path.splitext(new.name)
     pat = re.compile(re.escape(_version_stem(old.name)) + r"(_\d{4}-\d{2}-\d{2}_\d{4}(?:-\d+)?)"
                      + re.escape(old_ext))
     new_hist = new.parent / HISTORY_DIR
-    for f in sorted(old_hist.iterdir()):
-        m = pat.fullmatch(f.name)
-        if not m or not f.is_file() or f.is_symlink():
+    for name in sorted(os.listdir(lp(old_hist))):
+        f = old_hist / name
+        m = pat.fullmatch(name)
+        if not m or not _is_file(f) or os.path.islink(lp(f)):
             continue
         dest = new_hist / _fit(new_stem, m.group(1) + new_ext, MAX_FS_BYTES)
         if dest == f:
             continue
-        new_hist.mkdir(parents=True, exist_ok=True)
-        dest = unique_path(dest)
-        os.replace(str(f), str(dest))
+        os.makedirs(lp(new_hist), exist_ok=True)
+        dest = unique_path(dest, ignore=f)  # f 自己不算占用（只改大小写时原名即可）
+        os.replace(lp(f), lp(dest))
 
 
 def _add_seen(store, row, location: str) -> None:
@@ -170,7 +178,7 @@ def _owns_file(row) -> Optional[Path]:
             or not row["local_path"]:
         return None
     p = Path(row["local_path"])
-    return p if p.is_file() else None
+    return p if _is_file(p) else None
 
 
 def sync_item(ctx: SyncContext, item) -> Outcome:
@@ -216,7 +224,7 @@ def _sync(ctx: SyncContext, item) -> Outcome:
 
     # 内容去重得到的行：没变就继续指向已有文件
     if row is not None and row["status"] == "duplicate" and row["local_path"] \
-            and Path(row["local_path"]).is_file() \
+            and _is_file(Path(row["local_path"])) \
             and json.loads(row["remote_dir"] or "[]") == list(item.rel_dir) \
             and item.mtime <= (row["remote_mtime"] or 0):
         return Outcome.DUPLICATE
@@ -234,8 +242,8 @@ def _sync(ctx: SyncContext, item) -> Outcome:
         target = _choose_path(desired, item.token, cur)
         moved = target != cur
         if moved:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(str(cur), str(target))
+            os.makedirs(lp(target.parent), exist_ok=True)
+            os.replace(lp(cur), lp(target))
             store.upsert_item(token=item.token, local_path=target)  # 立刻记下，防中断后找不到
             _move_history(cur, target)
         if row["source"] != item.source and row["remote_dir"]:
@@ -262,7 +270,7 @@ def _new(ctx, item, desired: Path, base: dict) -> Outcome:
         if item.type == "file":
             sha = ctx.fetch.sha256_file(tmp)
             blob = store.find_blob(sha)
-            if blob is not None and blob != desired and blob.is_file() \
+            if blob is not None and blob != desired and _is_file(blob) \
                     and ctx.fetch.sha256_file(blob) == sha:
                 _drop_tmp(tmp)  # 刚下载的副本，与已有文件逐字节相同
                 store.upsert_item(status="duplicate", local_path=blob, sha256=sha,
@@ -270,7 +278,7 @@ def _new(ctx, item, desired: Path, base: dict) -> Outcome:
                 return Outcome.DUPLICATE
         with _PLACE_LOCK:  # 选名与落位原子化：目标已被占用就换名，绝不覆盖
             target = _choose_path(desired, item.token)
-            os.replace(str(tmp), str(target))
+            os.replace(lp(tmp), lp(target))
     finally:
         _drop_tmp(tmp)
     store.upsert_item(status="ok", local_path=target, sha256=sha, remote_mtime=item.mtime,
@@ -296,12 +304,12 @@ def _update(ctx, item, local: Path, old_mtime, base: dict) -> bool:
                 store.upsert_item(status="ok", remote_mtime=item.mtime, sha256=sha, **base)
                 return False
         if old_mtime is None:
-            old_mtime = int(local.stat().st_mtime)
+            old_mtime = int(os.stat(lp(local)).st_mtime)
         with _PLACE_LOCK:  # 归档与换新一步完成，期间别的线程不能占用 local
             archive_current(local, old_mtime)
             if _exists(local):  # 理论上不会发生；宁可报错也不覆盖
                 raise FileExistsError(str(local))
-            os.replace(str(tmp), str(local))
+            os.replace(lp(tmp), lp(local))
     finally:
         _drop_tmp(tmp)
     store.upsert_item(status="ok", local_path=local, sha256=sha, remote_mtime=item.mtime,

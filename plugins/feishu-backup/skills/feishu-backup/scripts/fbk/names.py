@@ -1,14 +1,14 @@
 """文件名清洗、版本名、扩展名规则。"""
 import os
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from .platform.fsnames import clean_component, is_taken
+
 EXPORT_EXT = {"docx": "pdf", "doc": "pdf", "slides": "pdf", "sheet": "xlsx", "bitable": "xlsx"}
 
 SHANGHAI = timezone(timedelta(hours=8))
-_ILLEGAL = re.compile(r'[/\\:*?"<>|\x00-\x1f\x7f]')
 
 
 MAX_FS_BYTES = 255
@@ -26,16 +26,21 @@ def _fit(stem: str, ext: str, max_bytes: int) -> str:
 
 
 def sanitize(name: str, max_bytes: int = 240) -> str:
-    """替换非法字符，超长时截断主干并保留扩展名。"""
-    s = _ILLEGAL.sub("_", name).strip()
-    if not s or not s.strip("."):
-        return "_"
+    """两系统统一的文件名规则（见 platform.fsnames.clean_component），超长时截断主干并保留扩展名。
+    保证：结果 ≤ max_bytes 字节（UTF-8）、不为空、不是只有点号、不以空格或点结尾、不是 Windows 保留名。"""
+    s = clean_component((name or "").strip())
     if len(s.encode("utf-8")) <= max_bytes:
         return s
     stem, ext = os.path.splitext(s)
-    if len(ext.encode("utf-8")) > 16:  # 不像真扩展名，整体当主干
-        stem, ext = s, ""
-    return _fit(stem, ext, max_bytes)
+    if len(ext.encode("utf-8")) > 16 or len(ext.encode("utf-8")) >= max_bytes:
+        stem, ext = s, ""  # 不像真扩展名，或扩展名本身就放不下：整体当主干
+    budget = max_bytes
+    while True:
+        # 截断后可能露出结尾的空格/点，再按规则清一遍；清完（加了 _ 前缀）若又超长就再少留一点
+        out = clean_component(_fit(stem, ext, budget))
+        if len(out.encode("utf-8")) <= max_bytes or budget <= 1:
+            return out
+        budget -= 1
 
 
 def local_filename(ftype: str, name: str) -> Optional[str]:
@@ -56,13 +61,14 @@ def version_name(filename: str, mtime: int) -> str:
     return _fit(stem, suffix + ext, MAX_FS_BYTES)
 
 
-def unique_path(path: Path) -> Path:
-    """path 已存在时依次试 stem-2.ext、stem-3.ext……"""
-    if not path.exists():
+def unique_path(path: Path, ignore: Optional[Path] = None) -> Path:
+    """path 被占用时依次试 stem-2.ext、stem-3.ext……
+    占用判断不区分大小写（platform.fsnames.is_taken）；ignore 是调用方自己的文件，不算占用。"""
+    if not is_taken(path, ignore):
         return path
     n = 2
     while True:
         cand = path.with_name(_fit(path.stem, "-%d%s" % (n, path.suffix), MAX_FS_BYTES))
-        if not cand.exists():
+        if not is_taken(cand, ignore):
             return cand
         n += 1

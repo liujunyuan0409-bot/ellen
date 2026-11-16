@@ -10,6 +10,7 @@ from typing import Iterator, Union
 from . import fetcher
 from .client import ApiError
 from .names import EXPORT_EXT, SHANGHAI, sanitize, unique_path
+from .platform.fsnames import lp
 from .sync import Outcome, _PLACE_LOCK
 from .walker import RemoteItem
 
@@ -179,20 +180,20 @@ def save_attachment(ctx, hit: AttachmentHit) -> Outcome:
         ctx.fetch.download_attachment(ctx.client, hit.message_id, hit.file_key, tmp)
         sha = ctx.fetch.sha256_file(tmp)
         blob = store.find_blob(sha)
-        if blob is not None and blob.is_file():
-            tmp.unlink()
+        if blob is not None and os.path.isfile(lp(blob)):
+            os.unlink(lp(tmp))
             store.upsert_attachment(hit.file_key, sha256=sha, local_path=blob, status="duplicate", **base)
             return Outcome.DUPLICATE
         with _PLACE_LOCK:
-            target = unique_path(desired)
-            os.replace(str(tmp), str(target))
+            target = unique_path(desired)  # 被占用（不区分大小写）就换名，绝不覆盖
+            os.replace(lp(tmp), lp(target))
     except (ApiError, OSError) as e:  # DiskFull / NetworkError / LoginRequired 不是这两类，照常抛出
         log.warning("附件下载失败：%s/%s（%s）", hit.chat_name, hit.file_name, e)
         store.upsert_attachment(hit.file_key, status="failed", **base)
         return Outcome.FAILED
     finally:
-        if tmp.is_file():
-            tmp.unlink()
+        if os.path.isfile(lp(tmp)):
+            os.unlink(lp(tmp))
     store.add_blob(sha, target)
     store.upsert_attachment(hit.file_key, sha256=sha, local_path=target, status="ok", **base)
     return Outcome.NEW

@@ -1,5 +1,8 @@
 """可复用的假传输层：按 (method, path) 返回预置响应，并记录调用。"""
 import json
+import os
+from contextlib import ExitStack
+from unittest import mock
 from typing import Dict, List, Tuple
 from urllib.parse import urlsplit
 
@@ -50,3 +53,41 @@ class FakeTransport:
         if not read_body:
             return status, rh, b""
         return status, rh, rb
+
+
+class LpStr(str):
+    """lp() 的返回值打上标记，用来检查文件操作是否都经过了 lp()。"""
+
+
+class LpSpy:
+    def __init__(self):
+        self.bad = []
+        self.ops = {}
+        self._depth = 0
+
+    def lp(self, p, is_windows=None):
+        return LpStr(str(p))
+
+    def _wrap(self, name, fn, nargs):
+        def w(*a, **k):
+            if self._depth:  # os.makedirs 递归建上级目录时的内部调用，不是程序的调用
+                return fn(*a, **k)
+            self.ops[name] = self.ops.get(name, 0) + 1
+            for x in a[:nargs]:
+                if not isinstance(x, LpStr):
+                    self.bad.append((name, x))
+            self._depth += 1
+            try:
+                return fn(*a, **k)
+            finally:
+                self._depth -= 1
+        return w
+
+    def patch(self, *modules):
+        st = ExitStack()
+        for m in modules:
+            st.enter_context(mock.patch.object(m, "lp", self.lp))
+        for name, nargs in (("replace", 2), ("rename", 2), ("unlink", 1), ("remove", 1), ("makedirs", 1)):
+            st.enter_context(mock.patch("os." + name, self._wrap(name, getattr(os, name), nargs)))
+        return st
+

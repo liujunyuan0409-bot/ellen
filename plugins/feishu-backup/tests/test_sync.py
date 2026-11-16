@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from fbk.names import SHANGHAI  # noqa: E402
 from fbk.store import Store  # noqa: E402
 from fbk.sync import Outcome, SyncContext, archive_current, mark_missing, sync_item  # noqa: E402
 from fbk.walker import RemoteItem  # noqa: E402
+from tests.fakes import LpSpy  # noqa: E402
 
 T1 = int(datetime(2025, 10, 2, 15, 30, tzinfo=SHANGHAI).timestamp())
 T2 = int(datetime(2025, 11, 5, 9, 0, tzinfo=SHANGHAI).timestamp())
@@ -476,6 +478,90 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(self.store.get_item("doxFAKE01")["status"], "ok")
         self.assertEqual(self.store.get_item("mndFAKE03")["status"], "skipped")
         self.assertEqual(self.all_files(), ["我的空间/乙.pdf", "我的空间/甲.pdf"])
+
+    # ---- v0.2：同名不区分大小写、长路径 ----
+    def test_case_insensitive_collision(self):
+        # 同目录先放 Report.pdf（token A），再同步 report.pdf（token B）
+        self.fetch.content["doxAAAAAA1"] = b"A"
+        self.fetch.content["doxBBBBBB2"] = b"B"
+        self.assertEqual(sync_item(self.ctx, item("doxAAAAAA1", "Report")), Outcome.NEW)
+        self.assertEqual(sync_item(self.ctx, item("doxBBBBBB2", "report")), Outcome.NEW)
+        d = self.root / "我的空间"
+        self.assertEqual(sorted(os.listdir(str(d))), ["Report.pdf", "report (doxBBB).pdf"])
+        self.assertEqual((d / "Report.pdf").read_bytes(), b"A")
+        self.assertEqual((d / "report (doxBBB).pdf").read_bytes(), b"B")
+
+    def _case_sensitive_lexists(self):
+        """模拟只认完全同名的检查（大小写敏感的卷、网络盘等），确认判断不靠文件系统本身。"""
+        real = os.path.lexists
+
+        def exact(p):
+            p = str(p)
+            return real(p) and os.path.basename(p) in os.listdir(os.path.dirname(p))
+        return mock.patch("os.path.lexists", side_effect=exact)
+
+    def test_case_insensitive_collision_independent_of_fs(self):
+        d = self.root / "我的空间"
+        d.mkdir(parents=True)
+        (d / "Report.pdf").write_bytes(b"user's own")
+        self.fetch.content["doxBBBBBB2"] = b"B"
+        with self._case_sensitive_lexists():
+            self.assertEqual(sync_item(self.ctx, item("doxBBBBBB2", "report")), Outcome.NEW)
+        self.assertEqual(sorted(os.listdir(str(d))), ["Report.pdf", "report (doxBBB).pdf"])
+        self.assertEqual((d / "Report.pdf").read_bytes(), b"user's own")
+
+    def test_case_insensitive_move_never_overwrites(self):
+        self.fetch.content["doxFAKE01"] = b"mine"
+        sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "旧")))
+        new = self.root / "我的空间" / "新"
+        new.mkdir(parents=True)
+        (new / "MANUAL.pdf").write_bytes(b"someone else")
+        self.new_run()
+        with self._case_sensitive_lexists():
+            out = sync_item(self.ctx, item("doxFAKE01", "manual", rel_dir=("我的空间", "新")))
+        self.assertEqual(out, Outcome.MOVED)
+        self.assertEqual((new / "MANUAL.pdf").read_bytes(), b"someone else")
+        self.assertEqual(sorted(os.listdir(str(new))), ["MANUAL.pdf", "manual (doxFAK).pdf"])
+
+    def test_case_only_rename_of_own_file_stays_put_name(self):
+        # 云端只改了大小写：自己的旧文件不算占用，直接改成新写法，不追加 (token)
+        self.fetch.content["doxFAKE01"] = b"v1"
+        sync_item(self.ctx, item("doxFAKE01", "Report", mtime=T1))
+        self.fetch.content["doxFAKE01"] = b"v2"
+        self.new_run()
+        sync_item(self.ctx, item("doxFAKE01", "Report", mtime=T2))
+        self.new_run()
+        with self._case_sensitive_lexists():
+            out = sync_item(self.ctx, item("doxFAKE01", "report", mtime=T2))
+        self.assertEqual(out, Outcome.MOVED)
+        d = self.root / "我的空间"
+        self.assertEqual(sorted(os.listdir(str(d))), ["report.pdf", "历史版本"])
+        self.assertEqual((d / "report.pdf").read_bytes(), b"v2")
+        self.assertEqual(os.listdir(str(d / "历史版本")), ["report_2025-10-02_1530.pdf"])
+        self.assertEqual(self.store.get_item("doxFAKE01")["local_path"], str(d / "report.pdf"))
+        # 下一轮稳定
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "report", mtime=T2)), Outcome.UNCHANGED)
+
+    def test_all_file_ops_go_through_lp(self):
+        """sync / fetcher 里的 os.replace / unlink / makedirs 都必须用 lp() 处理过的路径。"""
+        spy = LpSpy()
+        with spy.patch(sync, fetcher):
+            self.fetch.content["doxFAKE01"] = b"v1"
+            self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "旧"), mtime=T1)),
+                             Outcome.NEW)
+            self.fetch.content["doxFAKE01"] = b"v2"
+            self.new_run()
+            self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "手册", rel_dir=("我的空间", "旧"), mtime=T2)),
+                             Outcome.UPDATED)
+            self.new_run()
+            self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "手册2", rel_dir=("我的空间", "新"), mtime=T2)),
+                             Outcome.MOVED)
+            (self.root / "x.fbk-part").write_bytes(b"")
+            self.assertEqual(fetcher.clean_parts(self.root), 1)
+        self.assertEqual(spy.bad, [])
+        self.assertGreaterEqual(spy.ops["replace"], 4)  # 新增 1 + 归档 1 + 换新 1 + 移动 1 + 搬历史 1
+        self.assertGreaterEqual(spy.ops["unlink"], 1)
 
 
 if __name__ == "__main__":

@@ -1,17 +1,19 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "feishu-backup" / "scripts"))
 
-from fbk import chats  # noqa: E402
+from fbk import chats, fetcher  # noqa: E402
 from fbk.client import ApiError, FeishuClient  # noqa: E402
 from fbk.store import Store  # noqa: E402
 from fbk.sync import Outcome, SyncContext  # noqa: E402
-from tests.fakes import FakeTransport  # noqa: E402
+from tests.fakes import FakeTransport, LpSpy  # noqa: E402
 
 DOC = "https://example.feishu.cn/docx/AbCdEfGhIjK1"
 SHEET = "https://example.feishu.cn/sheets/ShEeTtOkEn12"
@@ -190,6 +192,33 @@ class SaveAttachmentTest(unittest.TestCase):
         d = self.root / "群聊附件" / "项目群"
         self.assertEqual((d / "2025-11-13_a.txt").read_bytes(), b"one")
         self.assertEqual((d / "2025-11-13_a-2.txt").read_bytes(), b"two")
+
+    def test_case_insensitive_same_name_never_overwrites(self):
+        t = FakeTransport()
+        self.queue_dl(t, "m1", "fk1", b"one")
+        self.queue_dl(t, "m2", "fk2", b"two")
+        ctx = self.ctx(t)
+        chats.save_attachment(ctx, self.hit("fk1", "A.TXT", "m1"))
+        real = os.path.lexists
+        exact = lambda p: real(p) and os.path.basename(p) in os.listdir(os.path.dirname(p))  # noqa: E731
+        with mock.patch("os.path.lexists", side_effect=exact):
+            self.assertEqual(chats.save_attachment(ctx, self.hit("fk2", "a.txt", "m2")), Outcome.NEW)
+        d = self.root / "群聊附件" / "项目群"
+        self.assertEqual(sorted(os.listdir(str(d))), ["2025-11-13_A.TXT", "2025-11-13_a-2.txt"])
+        self.assertEqual((d / "2025-11-13_A.TXT").read_bytes(), b"one")
+
+    def test_file_ops_go_through_lp(self):
+        t = FakeTransport()
+        self.queue_dl(t, "m1", "fk1", b"one")
+        self.queue_dl(t, "m2", "fk2", b"one")
+        spy = LpSpy()
+        with spy.patch(chats, fetcher):
+            ctx = SyncContext(client=make(t), store=self.store, root=self.root)  # 真 fetcher
+            self.assertEqual(chats.save_attachment(ctx, self.hit()), Outcome.NEW)
+            self.assertEqual(chats.save_attachment(ctx, self.hit("fk2", "b.txt", "m2")), Outcome.DUPLICATE)
+        self.assertEqual(spy.bad, [])
+        self.assertGreaterEqual(spy.ops["replace"], 2)
+        self.assertGreaterEqual(spy.ops["unlink"], 1)
 
     def test_failure_recorded(self):
         t = FakeTransport()
