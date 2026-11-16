@@ -193,6 +193,26 @@ class CleanupTest(Base):
         appcopy.install(make_src(self.base / "again", "1.0.0", main="NEW"), self.root, "1.0.0")
         self.assertEqual((self.root / "versions" / "1.0.0" / "fbk.py").read_text(), "NEW")
 
+    def test_leftover_aside_in_use_is_kept_and_new_aside_named_with_time(self):
+        from unittest import mock
+        appcopy.install(make_src(self.base, "1.0.0", main="A"), self.root, "1.0.0")
+        stamp = "20260101000000"
+        busy = self.root / "versions" / (".1.0.0.old-%s-%d" % (stamp, os.getpid()))
+        busy.mkdir()
+        (busy / "fbk.py").write_text("RUNNING")
+        import fcntl
+        fd = os.open(str(busy / "in_use"), os.O_RDWR | os.O_CREAT)
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)  # 同名旁置目录里正有进程在跑（PID 复用）
+        self.addCleanup(lambda: _close(fd))
+        self._hold("1.0.0")
+        with mock.patch.object(appcopy.time, "strftime", return_value=stamp):
+            appcopy.install(make_src(self.base / "again", "1.0.0", main="B"), self.root, "1.0.0")
+        self.assertEqual((busy / "fbk.py").read_text(), "RUNNING")  # 正在用的不删
+        self.assertEqual((self.root / "versions" / "1.0.0" / "fbk.py").read_text(), "B")
+        asides = sorted(p.name for p in (self.root / "versions").iterdir() if p.name != "1.0.0")
+        self.assertEqual(len(asides), 2)
+        self.assertTrue(all(n.startswith(".1.0.0.old-%s-" % stamp) for n in asides))
+
     def test_cleanup_never_touches_current_symlinks_files_or_tmp(self):
         appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
         outside = self.base / "outside"

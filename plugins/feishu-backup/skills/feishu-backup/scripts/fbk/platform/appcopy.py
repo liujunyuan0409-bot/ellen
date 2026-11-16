@@ -17,7 +17,7 @@
   （留下半个目录，下次清理再删），而启动器锁住后会重读 current，发现已不是当前版本就换用新版本，不会运行它。
   启动器每次锁住后都重读 current，所以「读了旧 current、还没来得及锁」的竞争也不会运行被删的目录。
 - 清理只删 app_root/versions/ 下的真实目录（不跟随符号链接 / 目录联接），且名字必须是版本号或
-  安装时的旁置名（.<版本>.old-<pid>）；current 指向的版本永远不删；current 读不出来时什么都不删。
+  安装时的旁置名（.<版本>.old-<时间>-<pid>）；current 指向的版本永远不删；current 读不出来时什么都不删。
 - v0.1.0 的旧布局（app_root 下直接是 fbk.py + fbk/）：挪进 app_root/app.legacy-<时间>/，永不删除。
 """
 import filecmp
@@ -39,7 +39,7 @@ IN_USE = "in_use"
 IN_USE_SLOTS = 64  # Windows：最多这么多个进程各占一个字节；全满时启动器照常运行（不再受保护）
 
 _VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*\Z")
-_ASIDE_RE = re.compile(r"^\.(.+)\.old-\d+\Z")
+_ASIDE_RE = re.compile(r"^\.(.+)\.old-\d+(?:-\d+)*\Z")  # .<版本>.old-<时间>-<pid>[-<序号>]（旧格式 .old-<pid> 也认）
 _INIT_VERSION_RE = re.compile(r"""__version__\s*=\s*["']([^"']+)["']""")
 
 FIX = "重新运行 setup --schedule"
@@ -303,7 +303,6 @@ def install(src_dir: Path, app_root: Path, version: str) -> Path:
         # （Windows 上被占用的目录改不了名；mac 上也不必留一个多余的旁置目录），只改写 current 和启动器。
         return _finish(app_root, version)
     tmp = vers / (".%s.new-%d" % (version, os.getpid()))
-    aside = vers / (".%s.old-%d" % (version, os.getpid()))
     if _is_real_dir(tmp):
         _rmtree(tmp)
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
@@ -313,8 +312,7 @@ def install(src_dir: Path, app_root: Path, version: str) -> Path:
         shutil.copy2(lp(src / "fbk.py"), lp(tmp / "fbk.py"))
         shutil.copytree(lp(src / "fbk"), lp(tmp / "fbk"), ignore=ignore)
         if os.path.lexists(lp(target)):
-            if _is_real_dir(aside):
-                _rmtree(aside)
+            aside = _free_aside(vers, version)
             try:
                 os.replace(lp(target), lp(aside))
                 moved_aside = True
@@ -332,6 +330,18 @@ def install(src_dir: Path, app_root: Path, version: str) -> Path:
             shutil.rmtree(lp(tmp), ignore_errors=True)
         raise
     return _finish(app_root, version)
+
+
+def _free_aside(vers: Path, version: str) -> Path:
+    """旁置名带时间和 PID；同名的旧旁置目录没人用才删（拿 in_use 排他锁），有人用就换个序号，绝不硬删。"""
+    base = ".%s.old-%s-%d" % (version, time.strftime("%Y%m%d%H%M%S"), os.getpid())
+    for i in range(1000):
+        aside = vers / (base if i == 0 else "%s-%d" % (base, i))
+        if not os.path.lexists(lp(aside)):
+            return aside
+        if _is_real_dir(aside) and _remove_if_unused(aside):
+            return aside
+    raise RuntimeError("%s 里的旧副本太多，清理不掉；请稍后再运行一次 setup --schedule" % vers)
 
 
 def _finish(app_root: Path, version: str) -> Path:
