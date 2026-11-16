@@ -55,6 +55,8 @@
 | 3.9 | 关机补跑：把计划设成 10 分钟后，关机，过了计划时间再开机登录 | 登录后几分钟内（「登录时」触发器）日志出现开始备份 |
 | 3.10 | 卡住的运行会挡住之后的触发：`schtasks /Run` 开始一次长备份，运行中用任务管理器把 pythonw 的网络断掉或让它卡住（例如拔网线时它正在下载大文件）；观察下一个整点 | 因为 `IgnoreNew`，下一个整点**不会**再起新的运行（任务计划程序历史里记「已忽略」）。恢复办法：任务计划程序里右键 `feishu-backup` →「结束」，或 `schtasks /End /TN feishu-backup`；下一次触发能正常开始，从断点继续，不提示「已有备份进程在运行」 |
 | 3.11 | 电池供电：拔掉电源后 `schtasks /Run /TN feishu-backup` | 照常运行（`DisallowStartIfOnBatteries=false`），拔电源时不会被停掉 |
+| 3.12 | 用**标准用户**（不是管理员）账户登录 Windows，在普通（非「以管理员身份运行」）的 PowerShell 里运行 `<fbk> setup --schedule` | `✓ 定时任务：已安装`；任务计划程序里 `feishu-backup` 的触发器有「登录时」（LogonTrigger）那一条。若出现「拒绝访问」（Access is denied）或任务没注册上，原样记下完整输出 |
+| 3.13 | 3.3 那次备份**还在跑**时运行 `<fbk> setup --schedule --weekday 3 --time 09:00` | `✓ 定时任务：已安装…每周三 09:00`，不报「程序副本正被运行中的备份占用」；`%LOCALAPPDATA%\feishu-backup\app\versions\` 里只有 `0.2.0`，没有 `.0.2.0.old-…` 目录；正在跑的备份不中断 |
 
 ## 4. 通知
 
