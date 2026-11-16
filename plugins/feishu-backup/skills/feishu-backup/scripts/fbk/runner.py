@@ -356,29 +356,32 @@ def _waiting_retry(row, now) -> bool:
 
 
 KEEP_LOGIN_AFTER = 86400  # 秒：登录信息超过一天没续期，定时检查时顺手续期一次
+KEEP_LOGIN_TIMEOUT = 15  # 秒：拿着运行锁续期，只试一次、短超时、不退避（别让「立即备份」等太久）
 
 
-def _keep_login_alive(cfg, root, transport, sleep=time.sleep) -> None:
+def _keep_login_alive(cfg, root, transport, now: int, sleep=time.sleep) -> None:
     """没到备份时间、直接退出前顺手续期登录（只是一次登录续期请求，不碰任何文件）。
 
     飞书的续期凭据只管 7 天，而每周才真正备份一次：不续期的话，下周那次只要晚开机一点就得重新登录。
     另一个进程正在备份时跳过（它自己会续期；两边同时续期会让旧凭据作废）。
-    没网静默跳过；续期被飞书拒绝就提醒重新登录（每天最多一次）。"""
+    没网或飞书暂时拒绝（非凭据失效的错误码）静默跳过、下个小时再试；续期凭据失效才提醒重新登录（每天最多一次）。"""
     try:
         tok = config.load_token()
     except (OSError, ValueError):
         return
     if not isinstance(tok, dict) or not tok.get("refresh_token"):
         return
-    if time.time() - int(tok.get("obtained_at") or 0) < KEEP_LOGIN_AFTER:
+    if int(now) - int(tok.get("obtained_at") or 0) < KEEP_LOGIN_AFTER:
         return
     try:
         lock = schedule.RunLock(root).acquire()
     except (schedule.AlreadyRunning, OSError):
         return
     try:
-        auth.TokenManager(cfg, transport=transport, sleep=sleep)._refresh(tok)
+        auth.TokenManager(cfg, transport=transport, sleep=sleep).refresh(tok, attempts=1, timeout=KEEP_LOGIN_TIMEOUT)
         log.info("已续期登录")
+    except auth.RefreshFailed as e:
+        log.warning("续期登录暂时没成功，下次再试：%s", e)
     except auth.NetworkError as e:
         log.info("续期登录时网络不通，下次再试：%s", e)
     except auth.LoginRequired as e:
@@ -461,12 +464,12 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
             _check_stale(last, cfg, now)
             if _waiting_retry(store.last_run(), now):
                 log.info("上次没读全，6 小时内不重试，跳过")
-                _keep_login_alive(cfg, root, transport, sleep)
+                _keep_login_alive(cfg, root, transport, now, sleep)
                 return 0
             hh, mm = schedule.parse_time(cfg.schedule_time)
             if not schedule.is_due(last, now, cfg.schedule_weekday, hh, mm):
                 log.info("本周期已经成功备份过，跳过")
-                _keep_login_alive(cfg, root, transport, sleep)
+                _keep_login_alive(cfg, root, transport, now, sleep)
                 return 0
         try:
             lock = schedule.RunLock(root).acquire()

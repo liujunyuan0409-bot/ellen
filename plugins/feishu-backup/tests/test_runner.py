@@ -252,6 +252,41 @@ class GateTest(Base):
         self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
         self.assertEqual(self.notified_keys(), ["login_required"])
 
+    def test_renew_single_short_attempt_no_backoff(self):
+        # 终审 I2：拿着运行锁时只试一次、15 秒超时、不退避，免得「立即备份」被挡好几分钟
+        self._succeeded_this_week()
+        self._old_token(2 * 86400)
+        self.t.queue("POST", self.TOKEN_PATH, status=502, body=b"bad gateway")
+        sleeps = []
+        self.assertEqual(runner.run(transport=self.t, sleep=sleeps.append, force=False, now=int(time.time())), 0)
+        calls = [c for c in self.t.calls if c["path"] == self.TOKEN_PATH]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["timeout"], 15)
+        self.assertEqual(sleeps, [])
+        self.notify.assert_not_called()
+
+    def test_renew_transient_code_quiet(self):
+        self._succeeded_this_week()
+        self._old_token(2 * 86400)
+        self.t.queue("POST", self.TOKEN_PATH, status=400, body={"code": 20050, "error": "server_error"})
+        self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
+        self.notify.assert_not_called()
+        self.assertEqual(config.load_token()["refresh_token"], "r-old")
+
+    def test_renew_age_uses_injected_now(self):
+        self._old_token(2 * 86400)
+        obtained = config.load_token()["obtained_at"]
+        cfg = config.load_config()
+        runner._keep_login_alive(cfg, self.root, self.t, now=obtained + 3600)
+        self.assertEqual(self.t.calls, [])
+
+    def test_main_refresh_transient_code_not_login_required(self):
+        config.save_token({"access_token": "u-old", "refresh_token": "r-old", "expires_in": 7200,
+                           "obtained_at": int(time.time()) - 7200})
+        self.t.queue("POST", self.TOKEN_PATH, status=400, body={"code": 20050, "error": "server_error"})
+        self.assertEqual(self.run_it(), 0)
+        self.assertNotIn("login_required", self.notified_keys())
+
     def test_renew_skipped_while_another_run_holds_lock(self):
         from fbk import schedule
         self._succeeded_this_week()

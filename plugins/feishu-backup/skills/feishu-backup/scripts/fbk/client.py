@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 DEFAULT_BASE = "https://open.feishu.cn/open-apis"
 MAX_RETRIES = 5
 
-# transport(method, url, headers, body[, stream_to=Path][, read_body=False]) -> (status, headers, body)
+# transport(method, url, headers, body[, stream_to=Path][, read_body=False][, timeout=秒]) -> (status, headers, body)
 # stream_to：200/206 时把响应体按 1 MiB 分块写入该文件并返回 b""；
 # read_body=False：不读取响应体（返回 b""）。两个关键字仅在需要时才传入。
 Transport = Callable[..., Tuple[int, dict, bytes]]
@@ -50,10 +50,10 @@ class NetworkError(Exception):
 TOKEN_INVALID_CODES = {99991663, 99991668, 99991677}
 
 
-def default_transport(method, url, headers, body, stream_to=None, read_body=True):
+def default_transport(method, url, headers, body, stream_to=None, read_body=True, timeout=60):
     req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             rh = dict(resp.headers.items())
             if stream_to is not None and resp.status in (200, 206):
                 with open(str(stream_to), "wb") as f:

@@ -31,13 +31,13 @@ class FakeTransport:
         return self.queue(method, path, status=status, headers=headers,
                           body={"code": code, "msg": msg, "data": data if data is not None else {}})
 
-    def __call__(self, method, url, headers, body, stream_to=None, read_body=True):
+    def __call__(self, method, url, headers, body, stream_to=None, read_body=True, timeout=None):
         parts = urlsplit(url)
         path = parts.path
         if path.startswith(API_PREFIX):
             path = path[len(API_PREFIX):]
         self.calls.append({"method": method, "path": path, "query": parts.query,
-                           "headers": dict(headers or {}), "body": body})
+                           "headers": dict(headers or {}), "body": body, "timeout": timeout})
         key = (method.upper(), path)
         items = self._q.get(key)
         if not items:

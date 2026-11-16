@@ -87,6 +87,49 @@ class AuthTest(unittest.TestCase):
         with self.assertRaises(auth.LoginRequired):
             auth.TokenManager(CFG, transport=t).access_token()
 
+    def test_documented_refresh_rejection_codes_require_login(self):
+        # 终审 I2：只有飞书文档里「续期凭据无效 / 过期 / 被吊销 / 已用过」的错误码才算要重新登录
+        for code in (20026, 20037, 20064, 20073, 20074):
+            self._stale()
+            t = FakeTransport().queue("POST", "/authen/v2/oauth/token", status=400, body={"code": code})
+            with self.assertRaises(auth.LoginRequired, msg=code):
+                auth.TokenManager(CFG, transport=t).access_token()
+
+    def test_invalid_grant_requires_login(self):
+        self._stale()
+        t = FakeTransport().queue("POST", "/authen/v2/oauth/token", status=400,
+                                  body={"code": 12345, "error": "invalid_grant"})
+        with self.assertRaises(auth.LoginRequired):
+            auth.TokenManager(CFG, transport=t).access_token()
+
+    def test_other_refresh_code_is_transient_not_login(self):
+        self._stale()
+        t = FakeTransport().queue("POST", "/authen/v2/oauth/token", status=400,
+                                  body={"code": 20050, "error": "server_error", "error_description": "busy"})
+        with self.assertRaises(auth.NetworkError) as cm:
+            auth.TokenManager(CFG, transport=t).access_token()
+        self.assertNotIsInstance(cm.exception, auth.LoginRequired)
+        self.assertIn("20050", str(cm.exception))
+        self.assertEqual(config.load_token()["access_token"], "old")
+
+    def test_public_refresh_single_attempt_with_timeout(self):
+        self._stale()
+        t = FakeTransport().queue("POST", "/authen/v2/oauth/token", status=502, body=b"bad gateway")
+        sleeps = []
+        tm = auth.TokenManager(CFG, transport=t, sleep=sleeps.append)
+        with self.assertRaises(auth.NetworkError):
+            tm.refresh(config.load_token(), attempts=1, timeout=15)
+        self.assertEqual(len(t.calls), 1)
+        self.assertEqual(sleeps, [])
+        self.assertEqual(t.calls[0]["timeout"], 15)
+
+    def test_refresh_stamps_injected_now(self):
+        self._stale()
+        t = FakeTransport().queue("POST", "/authen/v2/oauth/token", body={
+            "code": 0, "access_token": "new", "expires_in": 7200})
+        auth.TokenManager(CFG, transport=t, now=lambda: 1234567890).refresh(config.load_token())
+        self.assertEqual(config.load_token()["obtained_at"], 1234567890)
+
     def _stale(self, **extra):
         tok = {"access_token": "old", "refresh_token": "R1", "expires_in": 7200,
                "obtained_at": int(time.time()) - 7000}

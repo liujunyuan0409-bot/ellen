@@ -49,6 +49,14 @@ SCOPES = [
 
 RETRIES = 3
 
+# 飞书 OAuth v2 续期时「续期凭据无效 / 过期 / 被吊销 / 已用过」的错误码：只有这些（或 error=invalid_grant）
+# 才需要重新登录；其他错误码当作暂时故障，下次再试。
+REFRESH_INVALID_CODES = frozenset({20026, 20037, 20064, 20073, 20074})
+
+
+class RefreshFailed(NetworkError):
+    """续期被飞书以「非凭据失效」的原因拒绝（服务端繁忙等）：暂时故障，不提示重新登录。"""
+
 
 def build_authorize_url(app_id, redirect_uri, scopes, state):
     return AUTHORIZE_URL + "?" + urlencode({
@@ -59,13 +67,17 @@ def build_authorize_url(app_id, redirect_uri, scopes, state):
     })
 
 
-def _post_json(transport, path, payload, sleep=time.sleep):
+def _post_json(transport, path, payload, sleep=time.sleep, attempts=None, timeout=None):
+    """POST JSON。attempts：最多试几次（默认 RETRIES+1，之间按 1、2、4… 秒退避）；timeout：给了才传给 transport。"""
+    if attempts is None:
+        attempts = RETRIES + 1
     body = json.dumps(payload).encode("utf-8")
+    extra = {"timeout": timeout} if timeout is not None else {}
     last = None
-    for attempt in range(RETRIES + 1):
+    for attempt in range(attempts):
         try:
             status, _h, raw = transport("POST", DEFAULT_BASE + path,
-                                        {"Content-Type": "application/json; charset=utf-8"}, body)
+                                        {"Content-Type": "application/json; charset=utf-8"}, body, **extra)
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             last = e
         else:
@@ -75,15 +87,15 @@ def _post_json(transport, path, payload, sleep=time.sleep):
                 except ValueError:
                     return {"code": status or -1, "msg": "非 JSON 响应"}
             last = "HTTP %s" % status
-        if attempt < RETRIES:
+        if attempt < attempts - 1:
             sleep(2 ** attempt)
     raise NetworkError("网络异常，稍后重试：%s" % last)
 
 
-def _exchange(cfg, transport, sleep=time.sleep, **grant):
+def _exchange(cfg, transport, sleep=time.sleep, attempts=None, timeout=None, **grant):
     payload = {"client_id": cfg.app_id, "client_secret": cfg.app_secret}
     payload.update(grant)
-    return _post_json(transport, "/authen/v2/oauth/token", payload, sleep)
+    return _post_json(transport, "/authen/v2/oauth/token", payload, sleep, attempts=attempts, timeout=timeout)
 
 
 def _stamp(resp):
@@ -164,15 +176,23 @@ class TokenManager:
             expires_at = tok.get("obtained_at", 0) + tok.get("expires_in", 0)
             if expires_at - self.now() >= REFRESH_MARGIN:
                 return tok["access_token"]
-            return self._refresh(tok)
+            return self.refresh(tok)
 
-    def _refresh(self, tok):
+    def refresh(self, tok, attempts=None, timeout=None):
+        """用 refresh token 续期并保存，返回新的 access token。
+        凭据失效（REFRESH_INVALID_CODES / invalid_grant）→ LoginRequired；其他拒绝 → RefreshFailed（暂时故障）；
+        网络不通 → NetworkError。attempts / timeout 见 _post_json。"""
         rt = tok.get("refresh_token")
         if not rt:
             raise LoginRequired("没有 refresh token，请重新登录")
-        resp = _exchange(self.cfg, self.transport, self._sleep, grant_type="refresh_token", refresh_token=rt)
-        if resp.get("code", 0) != 0 or "access_token" not in resp:
-            raise LoginRequired("续期失败（code=%s），请重新登录" % resp.get("code"))
+        resp = _exchange(self.cfg, self.transport, self._sleep, attempts=attempts, timeout=timeout,
+                         grant_type="refresh_token", refresh_token=rt)
+        code = resp.get("code", 0)
+        if code in REFRESH_INVALID_CODES or resp.get("error") == "invalid_grant":
+            raise LoginRequired("续期凭据已失效（code=%s），请重新登录" % code)
+        if code != 0 or "access_token" not in resp:
+            raise RefreshFailed("续期暂时没成功（code=%s %s），稍后再试"
+                                % (code, resp.get("error_description") or resp.get("msg") or resp.get("error") or ""))
         new = dict(tok)
         new.update(resp)
         new["obtained_at"] = int(self.now())
