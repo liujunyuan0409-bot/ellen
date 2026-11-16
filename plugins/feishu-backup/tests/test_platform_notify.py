@@ -1,4 +1,5 @@
 """platform.notify.send：mac 用 osascript，Windows 用 PowerShell toast（标题/内容只走环境变量）。"""
+import base64
 import subprocess
 import unittest
 
@@ -35,7 +36,7 @@ class WindowsSendTest(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0)
         self.assertTrue(pn.send("标题XYZ", "内容ABC'; evil", runner=run, is_windows=True))
         cmd, kw = calls[0]
-        self.assertEqual(cmd[:4], ["powershell", "-NoProfile", "-NonInteractive", "-Command"])
+        self.assertEqual(cmd[:4], ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
         joined = " ".join(cmd)
         self.assertNotIn("标题XYZ", joined)
         self.assertNotIn("内容ABC", joined)
@@ -43,10 +44,12 @@ class WindowsSendTest(unittest.TestCase):
         self.assertEqual(kw["env"]["FBK_MSG"], "内容ABC'; evil")
         self.assertEqual(kw["creationflags"], 0x08000000)
         self.assertEqual(kw["timeout"], 20)
-        self.assertIn("$env:FBK_TITLE", cmd[4])
-        self.assertIn("SecurityElement]::Escape", cmd[4])
-        self.assertIn("ToastText02", cmd[4])
-        self.assertIn("{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}", cmd[4])
+        script = base64.b64decode(cmd[4]).decode("utf-16-le")
+        self.assertEqual(script, pn.TOAST_SCRIPT)
+        self.assertIn("$env:FBK_TITLE", script)
+        self.assertIn("SecurityElement]::Escape", script)
+        self.assertIn("ToastText02", script)
+        self.assertIn("{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}", script)
 
     def test_failure_swallowed(self):
         def run(cmd, **kw):

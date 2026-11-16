@@ -1,4 +1,5 @@
 """platform.prompt.ask：mac osascript；Windows tkinter，回退 PowerShell。全部离线注入。"""
+import base64
 import subprocess
 import unittest
 
@@ -6,12 +7,18 @@ from fbk import wizard
 from fbk.platform import prompt as pp
 
 
-class FakeRoot:
-    def __init__(self):
-        self.after_calls = []
+class FakeWidget:
+    def __init__(self, tk, kind, *a, **kw):
+        self.tk, self.kind, self.kw = tk, kind, kw
         self.attrs = {}
-        self.withdrawn = False
+        self.binds = {}
         self.destroyed = False
+        self.withdrawn = False
+        self.after_calls = []
+        tk.widgets.append(self)
+
+    def pack(self, **k):
+        pass
 
     def withdraw(self):
         self.withdrawn = True
@@ -19,31 +26,61 @@ class FakeRoot:
     def attributes(self, k, v):
         self.attrs[k] = v
 
+    def title(self, t):
+        pass
+
+    def bind(self, seq, fn):
+        self.binds[seq] = fn
+
+    def protocol(self, name, fn):
+        self.binds[name] = fn
+
+    def lift(self): pass
+    def focus_force(self): self.tk.focused = True
+    def focus_set(self): pass
+    def grab_set(self): self.tk.grabbed = True
+
     def after(self, ms, fn):
-        self.after_calls.append((ms, fn))
+        self.tk.after_calls.append((ms, fn))
+
+    def quit(self):
+        self.tk.quit_called = True
 
     def destroy(self):
         self.destroyed = True
 
+    def get(self):
+        return self.tk.text
 
-def make_tk(answer, root=None, fire_timeout=False):
-    root = root or FakeRoot()
+    def mainloop(self):
+        self.tk.script(self.tk)
 
-    class TkMod:
-        @staticmethod
-        def Tk():
-            return root
 
-    class SD:
-        seen = {}
+class FakeTk:
+    """script(fake) 在 mainloop 里执行，模拟用户操作。"""
 
-        @staticmethod
-        def askstring(title, prompt, **kw):
-            SD.seen = dict(title=title, prompt=prompt, **kw)
-            if fire_timeout:
-                root.after_calls[0][1]()
-            return answer
-    return (lambda: (TkMod, SD)), root, SD
+    def __init__(self, script, text=""):
+        self.script, self.text = script, text
+        self.widgets, self.after_calls = [], []
+        self.focused = self.grabbed = self.quit_called = False
+
+    def Tk(self):
+        return FakeWidget(self, "root")
+
+    def Toplevel(self, root):
+        return FakeWidget(self, "top")
+
+    def Label(self, *a, **k): return FakeWidget(self, "label", **k)
+    def Frame(self, *a, **k): return FakeWidget(self, "frame", **k)
+    def Entry(self, *a, **k): return FakeWidget(self, "entry", **k)
+    def Button(self, *a, **k): return FakeWidget(self, "button", **k)
+
+    def find(self, kind, **kw):
+        return [w for w in self.widgets if w.kind == kind and all(w.kw.get(k) == v for k, v in kw.items())]
+
+
+def click(label):
+    return lambda fk: fk.find("button", text=label)[0].kw["command"]()
 
 
 class MacAskTest(unittest.TestCase):
@@ -74,52 +111,59 @@ class MacAskTest(unittest.TestCase):
 
 
 class WindowsTkTest(unittest.TestCase):
-    def test_tk_hidden_topmost(self):
-        factory, root, sd = make_tk("secret1")
-        r = pp.ask("请输入", True, runner=None, is_windows=True, tk_factory=factory)
-        self.assertEqual(r, "secret1")
-        self.assertEqual(sd.seen["show"], "*")
-        self.assertTrue(root.withdrawn)
-        self.assertTrue(root.attrs["-topmost"])
-        self.assertEqual(root.after_calls[0][0], 300000)
-        self.assertTrue(root.destroyed)
+    def run_ask(self, fk, hidden=True):
+        return pp.ask("请输入", hidden, is_windows=True, tk_factory=lambda: fk)
 
-    def test_tk_visible(self):
-        factory, root, sd = make_tk("cli_x")
-        pp.ask("p", False, tk_factory=factory, is_windows=True)
-        self.assertIsNone(sd.seen["show"])
+    def test_ok_hidden_topmost_grab(self):
+        fk = FakeTk(click("确定"), text="secret1")
+        self.assertEqual(self.run_ask(fk), "secret1")
+        self.assertEqual(fk.find("entry")[0].kw["show"], "*")
+        top = fk.find("top")[0]
+        self.assertTrue(top.attrs["-topmost"])
+        self.assertTrue(fk.grabbed and fk.focused)
+        self.assertEqual(fk.after_calls[0][0], 300000)
+        self.assertTrue(all(w.destroyed for w in fk.widgets if w.kind in ("root", "top")))
+        self.assertTrue(fk.find("root")[0].withdrawn)
 
-    def test_tk_cancel_none(self):
-        factory, root, sd = make_tk(None)
+    def test_visible_entry(self):
+        fk = FakeTk(click("确定"), text="cli_x")
+        self.run_ask(fk, hidden=False)
+        self.assertEqual(fk.find("entry")[0].kw["show"], "")
+
+    def test_enter_key_submits_escape_cancels(self):
+        fk = FakeTk(lambda f: f.find("top")[0].binds["<Return>"](), text="abc")
+        self.assertEqual(self.run_ask(fk), "abc")
+        fk = FakeTk(lambda f: f.find("top")[0].binds["<Escape>"](), text="abc")
         with self.assertRaises(wizard.Cancelled):
-            pp.ask("p", True, tk_factory=factory, is_windows=True)
-        self.assertTrue(root.destroyed)
+            self.run_ask(fk)
 
-    def test_tk_empty(self):
-        factory, root, sd = make_tk("   ")
+    def test_cancel_button_and_window_close(self):
+        fk = FakeTk(click("取消"), text="abc")
         with self.assertRaises(wizard.Cancelled):
-            pp.ask("p", True, tk_factory=factory, is_windows=True)
+            self.run_ask(fk)
+        self.assertTrue(all(w.destroyed for w in fk.widgets if w.kind in ("root", "top")))
+        fk = FakeTk(lambda f: f.find("top")[0].binds["WM_DELETE_WINDOW"](), text="abc")
+        with self.assertRaises(wizard.Cancelled):
+            self.run_ask(fk)
 
-    def test_tk_timeout_is_cancel(self):
-        factory, root, sd = make_tk("late", fire_timeout=True)
+    def test_empty(self):
+        with self.assertRaises(wizard.Cancelled):
+            self.run_ask(FakeTk(click("确定"), text="   "))
+
+    def test_timeout_is_cancel(self):
+        fk = FakeTk(lambda f: f.after_calls[0][1](), text="late")
         with self.assertRaises(wizard.Cancelled) as cm:
-            pp.ask("p", True, tk_factory=factory, is_windows=True)
+            self.run_ask(fk)
         self.assertIn("5 分钟", str(cm.exception))
-        self.assertTrue(root.destroyed)
+        self.assertTrue(all(w.destroyed for w in fk.widgets if w.kind in ("root", "top")))
 
-    def test_tk_timeout_with_tclerror_still_cancel(self):
-        root = FakeRoot()
-
-        class TkMod:
-            Tk = staticmethod(lambda: root)
-
-        class SD:
-            @staticmethod
-            def askstring(*a, **k):
-                root.after_calls[0][1]()
-                raise RuntimeError("application has been destroyed")
-        with self.assertRaises(wizard.Cancelled):
-            pp.ask("p", True, tk_factory=lambda: (TkMod, SD), is_windows=True)
+    def test_mainloop_error_still_destroys(self):
+        def boom(f):
+            raise RuntimeError("x")
+        fk = FakeTk(boom)
+        with self.assertRaises(RuntimeError):
+            self.run_ask(fk)
+        self.assertTrue(all(w.destroyed for w in fk.widgets if w.kind in ("root", "top")))
 
 
 class WindowsPowerShellFallbackTest(unittest.TestCase):
@@ -136,8 +180,11 @@ class WindowsPowerShellFallbackTest(unittest.TestCase):
                    tk_factory=self._no_tk, isatty=lambda: True)
         self.assertEqual(r, "pw-secret")
         cmd, kw = calls[0]
-        self.assertEqual(cmd[0], "powershell")
-        self.assertIn("-AsSecureString", cmd[-1])
+        self.assertEqual(cmd[:3], ["powershell", "-NoProfile", "-EncodedCommand"])
+        script = base64.b64decode(cmd[-1]).decode("utf-16-le")
+        self.assertIn("-AsSecureString", script)
+        self.assertIn("[Console]::Error.Write($env:FBK_PROMPT", script)
+        self.assertNotIn("-Prompt", script)
         self.assertNotIn("pw-secret", " ".join(cmd))
         self.assertNotIn("请输入 Secret", " ".join(cmd))
         self.assertEqual(kw["env"]["FBK_PROMPT"], "请输入 Secret")
@@ -158,7 +205,19 @@ class WindowsPowerShellFallbackTest(unittest.TestCase):
             calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, stdout="cli_x\n")
         pp.ask("p", False, runner=run, is_windows=True, tk_factory=self._no_tk, isatty=lambda: True)
-        self.assertNotIn("-AsSecureString", calls[0][-1])
+        self.assertNotIn("-AsSecureString", base64.b64decode(calls[0][-1]).decode("utf-16-le"))
+
+    def test_prompt_echo_in_stdout_is_dropped(self):
+        r = pp.ask("p", True, runner=lambda c, **k: subprocess.CompletedProcess(
+            c, 0, stdout="请输入 Secret: \r\nSECRET9\r\n"),
+            is_windows=True, tk_factory=self._no_tk, isatty=lambda: True)
+        self.assertEqual(r, "SECRET9")
+
+    def test_fallback_reason_logged_without_input(self):
+        with self.assertLogs("fbk.platform.prompt", level="INFO") as lg:
+            pp.ask("p", True, runner=lambda c, **k: subprocess.CompletedProcess(c, 0, stdout="x\n"),
+                   is_windows=True, tk_factory=self._no_tk, isatty=lambda: True)
+        self.assertIn("ImportError", "\n".join(lg.output))
 
     def test_nonzero_cancel(self):
         with self.assertRaises(wizard.Cancelled):
