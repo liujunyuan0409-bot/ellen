@@ -291,7 +291,13 @@ def _setup_steps():
         steps.append(("failed", "%s 不存在（外接盘没插？）" % root))
     sc = _load_state(SCAN_STATE)
     steps.append(("done", "%s 扫描过" % _fmt_ts(sc.get("at"))) if sc else ("todo", "运行 scan"))
-    steps.append(("done", "已安装") if schedule.verify() is not None else ("todo", "运行 setup --schedule"))
+    probs = schedule.verify()
+    if probs is None:
+        steps.append(("todo", "运行 setup --schedule"))
+    elif probs:
+        steps.append(("failed", "已安装但跑不了：%s。怎么办：%s" % ("；".join(probs), SCHEDULE_FIX)))
+    else:
+        steps.append(("done", "已安装"))
     return [{"step": i + 1, "name": STEPS[i], "state": s, "detail": d} for i, (s, d) in enumerate(steps)]
 
 

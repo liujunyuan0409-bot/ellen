@@ -635,6 +635,19 @@ class CliSetupTest(CliBase):
         self.assertEqual(steps[0]["state"], "done")  # Python 版本
         self.assertEqual(steps[1]["state"], "todo")
 
+    def test_setup_status_schedule_with_problems_is_failed(self):
+        # 终审 M1：定时任务装了但跑不了，第 7 步不能显示 ✓
+        with mock.patch.object(schedule, "verify", return_value=["找不到 Python：/x/python3"]):
+            steps = json.loads(self.cli("setup", "--status", "--json")[1])["steps"]
+            _, text = self.cli("setup", "--status")
+        self.assertEqual(steps[6]["state"], "failed")
+        self.assertIn("找不到 Python：/x/python3", steps[6]["detail"])
+        self.assertIn("setup --schedule", steps[6]["detail"])
+        self.assertIn("✗", text.splitlines()[6])
+        with mock.patch.object(schedule, "verify", return_value=[]):
+            steps = json.loads(self.cli("setup", "--status", "--json")[1])["steps"]
+        self.assertEqual(steps[6]["state"], "done")
+
     def test_root_missing_without_create(self):
         config.save_config(config.Config("cli_fake", "sec_fake"))
         p = self.base / "新盘" / "飞书备份"
