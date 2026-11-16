@@ -1,4 +1,4 @@
-"""macOS 系统通知（osascript），带按 key 的每日节流。尽力而为：任何失败都吞掉。"""
+"""系统通知（实际发送在 platform.notify），带按 key 的每日节流。尽力而为：任何失败都吞掉。"""
 import hashlib
 import json
 import logging
@@ -9,16 +9,11 @@ from typing import Optional
 
 from . import config
 from .names import SHANGHAI
+from .platform import notify as platform_notify
 
 log = logging.getLogger(__name__)
 
 STATE_FILE = "notify_state.json"
-
-
-def _quote(s: str) -> str:
-    """AppleScript 字符串字面量：转义反斜杠和双引号，换行改空格。"""
-    s = str(s).replace("\\", "\\\\").replace('"', '\\"')
-    return '"%s"' % s.replace("\r", " ").replace("\n", " ")
 
 
 def _load_state() -> dict:
@@ -69,14 +64,7 @@ def notify(title: str, message: str, key: Optional[str] = None, now: Optional[in
         if state.get(key) == today:
             log.info("通知已节流（今天发过）：%s", key)
             return False
-    script = "display notification %s with title %s" % (_quote(message), _quote(title))
-    try:
-        r = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=15)
-        if r.returncode != 0:
-            log.warning("系统通知失败：%s", (r.stderr or b"").decode("utf-8", "replace").strip())
-            return False
-    except Exception as e:  # noqa: BLE001 —— 通知是尽力而为
-        log.warning("系统通知失败：%s", e)
+    if not platform_notify.send(title, message, runner=subprocess.run):
         return False
     if key:
         state[key] = today
