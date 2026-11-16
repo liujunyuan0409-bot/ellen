@@ -296,7 +296,7 @@ class AppCopyTest(unittest.TestCase):
 
         def runner(args, **kw):
             calls.append(list(args))
-            return subprocess.CompletedProcess(args, 1, b"", b"")
+            return subprocess.CompletedProcess(args, 1, b"", b"ERROR: The system cannot find the file specified.")
 
         schedule.uninstall(runner=runner, is_windows=True)
         self.assertIsNone(schedule.verify(runner=runner, is_windows=True))

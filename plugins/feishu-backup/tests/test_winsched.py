@@ -75,6 +75,18 @@ class TaskXmlTest(unittest.TestCase):
         self.assertEqual(winsched.default_user({"USERDOMAIN": "FAKEPC", "USERNAME": "fakeuser"}), USER)
         self.assertEqual(winsched.default_user({"USERNAME": "fakeuser"}), "fakeuser")
 
+    def test_default_user_falls_back_to_getuser_or_raises(self):
+        self.assertEqual(winsched.default_user({"USERDOMAIN": "FAKEPC", "USERNAME": ""},
+                                               getuser=lambda: "fakeuser"), USER)
+        self.assertEqual(winsched.default_user({}, getuser=lambda: "fakeuser"), "fakeuser")
+
+        def boom():
+            raise OSError("no user")
+        for g in (boom, lambda: ""):
+            with self.assertRaises(RuntimeError) as cm:
+                winsched.default_user({"USERDOMAIN": "FAKEPC"}, getuser=g)
+            self.assertIn("用户名", str(cm.exception))
+
 
 class Runner:
     def __init__(self, rc=0, stdout=b"", stderr=b""):
@@ -124,9 +136,20 @@ class InstallTest(unittest.TestCase):
                                    ["schtasks", "/Delete", "/TN", "feishu-backup", "/F"]])
 
     def test_uninstall_absent_is_noop(self):
-        r = Runner(rc=1)
+        for msg in ("ERROR: The system cannot find the file specified.", "错误: 系统找不到指定的文件。"):
+            r = Runner(rc=1, stderr=msg.encode("utf-8"))
+            winsched.uninstall(runner=r)
+            self.assertEqual(r.calls, [["schtasks", "/Query", "/TN", "feishu-backup"]])
+
+    def test_uninstall_other_query_failure_still_deletes(self):
+        r = Runner(rc=lambda a: 1 if "/Query" in a else 0, stderr=b"ERROR: Access is denied.")
         winsched.uninstall(runner=r)
-        self.assertEqual(r.calls, [["schtasks", "/Query", "/TN", "feishu-backup"]])
+        self.assertEqual(r.calls[-1], ["schtasks", "/Delete", "/TN", "feishu-backup", "/F"])
+        r = Runner(rc=1, stderr=b"ERROR: Access is denied.")
+        with self.assertRaises(RuntimeError) as cm:
+            winsched.uninstall(runner=r)
+        self.assertIn("删除任务失败", str(cm.exception))
+        self.assertIn("Access is denied", str(cm.exception))
 
     def test_uninstall_delete_failure_raises(self):
         r = Runner(rc=lambda a: 1 if "/Delete" in a else 0, stderr=b"denied")

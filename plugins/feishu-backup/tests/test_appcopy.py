@@ -239,6 +239,98 @@ class LauncherTest(Base):
         self.assertEqual([x.name for x in (self.root / "versions").iterdir()], ["1.1.0"])
 
 
+def _load_launcher(path: Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fbk_launch_under_test", str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class FixRound1Test(Base):
+    @unittest.skipIf(IS_WINDOWS, "posix 符号链接")
+    def test_symlinked_in_use_not_followed(self):
+        appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
+        appcopy.install(make_src(self.base, "1.1.0"), self.root, "1.1.0")
+        old = self.root / "versions" / "1.0.0"
+        old.mkdir()  # 模拟残留的旧版本目录，in_use 是指向外部的链接
+        (old / "fbk.py").write_text("x")
+        victim = self.base / "victim.txt"
+        victim.write_text("precious")
+        os.symlink(str(victim), str(old / "in_use"))
+        self.assertEqual(appcopy.cleanup(self.root), [])  # 不跟随、不删
+        self.assertTrue(old.is_dir())
+        self.assertEqual(victim.read_text(), "precious")
+        # 启动器同样拒绝链接的 in_use
+        mod = _load_launcher(self.root / "launch.py")
+        self.assertIsNone(mod._hold(str(old)))
+        dangling = self.root / "versions" / "1.1.0" / "in_use"
+        if dangling.exists():
+            dangling.unlink()
+        os.symlink(str(self.base / "created-by-follow"), str(dangling))
+        self.assertIsNone(mod._hold(str(dangling.parent)))
+        self.assertFalse((self.base / "created-by-follow").exists())
+
+    @unittest.skipIf(IS_WINDOWS, "用 fcntl 模拟清理进程的排他锁")
+    def test_launcher_lock_failure_retries_with_sleep_then_gives_up(self):
+        import fcntl
+        appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
+        fd = os.open(str(self.root / "versions" / "1.0.0" / "in_use"), os.O_RDWR | os.O_CREAT)
+        self.addCleanup(lambda: _close(fd))
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 清理进程正拿着排他锁
+        mod = _load_launcher(self.root / "launch.py")
+        sleeps = []
+        with self.assertRaises(SystemExit) as cm:
+            mod.main(sleep=sleeps.append)
+        self.assertIn("setup --schedule", str(cm.exception.code))
+        self.assertEqual(sleeps, [mod.RETRY_SLEEP] * (mod.TRIES - 1))
+        self.assertEqual(mod._HELD, [])  # 没有在没锁住的情况下继续运行
+
+    @unittest.skipIf(IS_WINDOWS, "用 fcntl 模拟清理进程的排他锁")
+    def test_launcher_retries_after_lock_released(self):
+        import fcntl
+        appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
+        fd = os.open(str(self.root / "versions" / "1.0.0" / "in_use"), os.O_RDWR | os.O_CREAT)
+        self.addCleanup(lambda: _close(fd))
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        mod = _load_launcher(self.root / "launch.py")
+        sleeps = []
+
+        def sleep(s):
+            sleeps.append(s)
+            fcntl.flock(fd, fcntl.LOCK_UN)  # 清理放弃了
+
+        ran = []
+        mod.runpy = type("R", (), {"run_path": staticmethod(lambda p, run_name=None: ran.append(p))})
+        argv = sys.argv[:]
+        try:
+            mod.main(sleep=sleep)
+        finally:
+            sys.argv = argv
+            for h in mod._HELD:
+                _close(h)
+        self.assertEqual(sleeps, [mod.RETRY_SLEEP])
+        self.assertEqual(len(mod._HELD), 1)
+        self.assertTrue(ran and ran[0].endswith("fbk.py"))
+
+    def test_failed_swap_restores_old_copy(self):
+        appcopy.install(make_src(self.base, "1.0.0", main="OLD"), self.root, "1.0.0")
+        real = os.replace
+
+        def flaky(src, dst):
+            if ".new-" in os.path.basename(str(src)):
+                raise OSError("disk hiccup")
+            return real(src, dst)
+
+        from unittest import mock
+        with mock.patch.object(appcopy.os, "replace", side_effect=flaky):
+            with self.assertRaises(OSError):
+                appcopy.install(make_src(self.base / "again", "1.0.0", main="NEW"), self.root, "1.0.0")
+        target = self.root / "versions" / "1.0.0"
+        self.assertEqual((target / "fbk.py").read_text(), "OLD")
+        self.assertEqual([p.name for p in (self.root / "versions").iterdir()], ["1.0.0"])
+
+
 class VerifyTest(Base):
     def test_ok(self):
         appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")

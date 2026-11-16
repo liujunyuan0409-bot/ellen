@@ -21,9 +21,21 @@ _DECL_RE = re.compile(r"^\s*<\?xml[^>]*\?>\s*")
 _ARGS_RE = re.compile(r'^\s*"([^"]+)"\s+run\s*$')
 
 
-def default_user(env: Mapping = os.environ) -> str:
-    """DOMAIN\\user（本机账户的 DOMAIN 是电脑名）；拿不到域时只写用户名。"""
-    user, dom = env.get("USERNAME", ""), env.get("USERDOMAIN", "")
+def default_user(env: Mapping = os.environ, getuser=None) -> str:
+    """DOMAIN\\user（本机账户的 DOMAIN 是电脑名）；拿不到域时只写用户名。
+    USERNAME 为空时用 getpass.getuser()；还是拿不到就报错，绝不写空的 UserId。"""
+    user, dom = (env.get("USERNAME") or "").strip(), (env.get("USERDOMAIN") or "").strip()
+    if not user:
+        if getuser is None:
+            import getpass
+            getuser = getpass.getuser
+        try:
+            user = (getuser() or "").strip()
+        except Exception:  # noqa: BLE001 —— getpass 找不到用户名时抛 OSError/KeyError 等
+            user = ""
+    if not user:
+        raise RuntimeError("拿不到当前 Windows 用户名（环境变量 USERNAME 为空），没法创建定时任务；"
+                           "请在自己的账户下打开命令行窗口重新运行 setup --schedule")
     return "%s\\%s" % (dom, user) if dom else user
 
 
@@ -133,9 +145,18 @@ def install(xml: str, name: str = TASK_NAME, runner=subprocess.run, tmpdir=None)
     return name
 
 
+_NOT_FOUND = ("cannot find", "does not exist", "找不到", "不存在")
+
+
+def _is_not_found(r) -> bool:
+    text = (_decode(r.stderr) + "\n" + _decode(r.stdout)).lower()
+    return any(k in text for k in _NOT_FOUND)
+
+
 def uninstall(name: str = TASK_NAME, runner=subprocess.run) -> None:
-    """没装就什么都不做；装了就删，删不掉报错。"""
-    if _schtasks(runner, "/Query", "/TN", name).returncode != 0:
+    """查询明确说「任务不存在」时什么都不做；其他情况（存在，或查询因别的原因失败）都执行删除，删不掉报中文错误。"""
+    q = _schtasks(runner, "/Query", "/TN", name)
+    if q.returncode != 0 and _is_not_found(q):
         return
     r = _schtasks(runner, "/Delete", "/TN", name, "/F")
     if r.returncode != 0:

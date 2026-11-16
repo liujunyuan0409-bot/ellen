@@ -51,10 +51,14 @@ LAUNCHER_SOURCE = r'''#!/usr/bin/env python3
 import os
 import re
 import runpy
+import stat
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SLOTS = %(slots)d
+TRIES = 5
+RETRY_SLEEP = 0.2  # 秒：两次尝试之间稍等（清理进程可能正拿着排他锁）
 _OK = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*\Z")
 _HELD = []  # 锁文件句柄：整个进程期间保持打开
 
@@ -70,18 +74,37 @@ def _current():
     return v
 
 
-def _hold(vdir):
-    """返回打开的 in_use 句柄（尽量持有共享锁）；版本目录不在时返回 None。"""
+def _is_link(p):
+    """符号链接或 Windows 重解析点（目录联接等）算链接；读不了也按链接处理。不存在返回 False。"""
     try:
-        fd = os.open(os.path.join(vdir, "in_use"), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+        st = os.lstat(p)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
+def _hold(vdir):
+    """返回已持有共享锁的 in_use 句柄；目录不在、in_use 是链接或锁不上时返回 None（由调用方重试）。"""
+    path = os.path.join(vdir, "in_use")
+    if _is_link(path):
+        return None
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o644)
     except OSError:
         return None
+    locked = False
     if os.name == "nt":
         import msvcrt
         for i in range(SLOTS):
             try:
                 os.lseek(fd, i, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                locked = True
                 break
             except OSError:
                 continue
@@ -89,26 +112,32 @@ def _hold(vdir):
         import fcntl
         try:
             fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            locked = True
         except OSError:
-            pass  # 只有清理进程正拿着排他锁时才会这样；下面重读 current 会发现版本已换
+            pass  # 清理进程正拿着排他锁（正在删这个版本）
+    if not locked:
+        os.close(fd)
+        return None
     return fd
 
 
-def main():
-    for _ in range(5):
+def main(sleep=time.sleep):
+    for i in range(TRIES):
         v = _current()
         if v is None:
             sys.exit("飞书备份：找不到程序副本的当前版本（%%s）。请重新运行 setup --schedule"
                      %% os.path.join(ROOT, "current"))
         vdir = os.path.join(ROOT, "versions", v)
         fd = _hold(vdir)
-        if fd is not None and _current() == v and os.path.isfile(os.path.join(vdir, "fbk.py")):
-            _HELD.append(fd)
-            break
         if fd is not None:
+            if _current() == v and os.path.isfile(os.path.join(vdir, "fbk.py")):
+                _HELD.append(fd)
+                break
             os.close(fd)
+        if i < TRIES - 1:
+            sleep(RETRY_SLEEP)
     else:
-        sys.exit("飞书备份：程序副本不完整（%%s）。请重新运行 setup --schedule" %% ROOT)
+        sys.exit("飞书备份：程序副本不完整或正被清理（%%s）。请稍后再试，或重新运行 setup --schedule" %% ROOT)
     script = os.path.join(vdir, "fbk.py")
     sys.path.insert(0, vdir)
     sys.argv = [script] + sys.argv[1:]
@@ -196,8 +225,18 @@ def _unlock_whole(fd: int) -> None:
 
 def _remove_if_unused(vdir: Path) -> bool:
     """拿得到 in_use 的排他锁才删（删除期间一直拿着，启动器拿不到锁会重读 current 换版本）。"""
+    path = vdir / IN_USE
+    if os.path.lexists(lp(path)):
+        try:
+            st = os.lstat(lp(path))
+        except OSError:
+            return False
+        if stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0)
+                                         & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            return False  # in_use 是链接：不跟随、不删，留给人看
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(lp(vdir / IN_USE), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+        fd = os.open(lp(path), flags, 0o644)
     except OSError:
         return False
     try:
@@ -263,6 +302,7 @@ def install(src_dir: Path, app_root: Path, version: str) -> Path:
         _rmtree(tmp)
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
     os.mkdir(lp(tmp))
+    moved_aside = False
     try:
         shutil.copy2(lp(src / "fbk.py"), lp(tmp / "fbk.py"))
         shutil.copytree(lp(src / "fbk"), lp(tmp / "fbk"), ignore=ignore)
@@ -271,11 +311,17 @@ def install(src_dir: Path, app_root: Path, version: str) -> Path:
                 _rmtree(aside)
             try:
                 os.replace(lp(target), lp(aside))
+                moved_aside = True
             except OSError as e:
                 raise RuntimeError("程序副本 %s 正被运行中的备份占用，暂时换不了；等这次备份结束后再运行一次（%s）"
                                    % (version, e))
         os.replace(lp(tmp), lp(target))
     except BaseException:
+        if moved_aside and not os.path.lexists(lp(target)):
+            try:  # 新副本没放进去：把旧副本放回原处（尽力而为，绝不删旧副本）
+                os.replace(lp(aside), lp(target))
+            except OSError:
+                pass
         if _is_real_dir(tmp):
             shutil.rmtree(lp(tmp), ignore_errors=True)
         raise
