@@ -338,7 +338,11 @@ class CliBase(unittest.TestCase):
         p = mock.patch.object(schedule, "default_agents_dir", return_value=self.agents)
         p.start()
         self.addCleanup(p.stop)
-        p = mock.patch.object(schedule, "default_app_dir", return_value=base / "AppSupport" / "app")
+        self.app = base / "AppSupport" / "app"
+        p = mock.patch.object(schedule, "default_app_root", return_value=self.app)
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(schedule, "IS_WINDOWS", False)  # CLI 测试走 mac 分支，不碰 schtasks
         p.start()
         self.addCleanup(p.stop)
         self.base = base
@@ -595,6 +599,42 @@ class CliRunTest(CliBase):
         self.assertIn("下次计划：每周一 12:00（", out)
         d = json.loads(self.cli("status", "--json")[1])
         self.assertRegex(d["next_run_text"], r"^\d{4}-\d{2}-\d{2} 12:00$")
+
+    def test_setup_schedule_time_hint(self):
+        self._cfg()
+        with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")):
+            _, out = self.cli("setup", "--schedule")
+        self.assertIn("每周一 12:00（错过会在开机后补跑）", out)
+
+    def test_setup_schedule_copies_app_then_installs(self):
+        self._cfg()
+        from fbk.platform import launchd
+        with mock.patch.object(launchd, "install", return_value=self.agents / "p.plist") as inst, \
+                mock.patch.object(schedule, "pick_python", return_value="/usr/bin/python3"):
+            code, out = self.cli("setup", "--schedule", "--json")
+        self.assertEqual(code, 0, out)
+        launcher = self.app / "launch.py"
+        self.assertTrue(launcher.is_file())
+        self.assertTrue((self.app / "versions" / schedule.__version__ / "fbk.py").is_file())
+        self.assertEqual(inst.call_args[0][:2], ("/usr/bin/python3", str(launcher)))
+        self.assertEqual(inst.call_args[1]["agents_dir"], self.agents)
+
+    def test_install_json_copies_app_without_schedule(self):
+        with mock.patch.object(schedule, "install") as sched:
+            code, out = self.cli("install", "--json")
+        self.assertEqual(code, 0, out)
+        sched.assert_not_called()
+        d = json.loads(out)
+        self.assertTrue(d["ok"])
+        self.assertEqual(d["launcher"], str(self.app / "launch.py"))
+        self.assertEqual(d["app_dir"], str(self.app / "versions" / schedule.__version__))
+        self.assertEqual(d["version"], schedule.__version__)
+        self.assertTrue(Path(d["launcher"]).is_file())
+        self.assertFalse(self.agents.exists())
+        code, out = self.cli("install")
+        self.assertEqual(code, 0)
+        self.assertIn(str(self.app / "launch.py"), out)
+        self.assertIn("setup --schedule", out)
 
     def test_schedule_uninstall(self):
         with mock.patch.object(schedule, "uninstall") as u:

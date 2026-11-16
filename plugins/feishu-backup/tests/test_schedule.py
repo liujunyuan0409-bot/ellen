@@ -11,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "feishu-backup" / "scripts"))
 
 from fbk import config, schedule  # noqa: E402
+from fbk.platform import launchd, winsched  # noqa: E402
 from fbk.schedule import (AlreadyRunning, RunLock, is_due, is_stale, last_slot, next_slot,  # noqa: E402
                           parse_time, plist_xml, RETRY_AFTER_INCOMPLETE, weekday_name)
 
@@ -170,15 +171,17 @@ class PlistTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_plist_roundtrip(self):
-        d = plistlib.loads(plist_xml("/usr/bin/python3", "/opt/fbk.py"))
+        d = plistlib.loads(launchd.plist_xml("/usr/bin/python3", "/opt/app/launch.py"))
         self.assertEqual(d["Label"], "local.feishu-backup")
         self.assertIs(d["RunAtLoad"], True)
         self.assertEqual(d["StartInterval"], 3600)
         # 终审 I1：caffeinate -i 防止跑到一半进入空闲睡眠
         self.assertEqual(d["ProgramArguments"],
-                         ["/usr/bin/caffeinate", "-i", "/usr/bin/python3", "/opt/fbk.py", "run"])
+                         ["/usr/bin/caffeinate", "-i", "/usr/bin/python3", "/opt/app/launch.py", "run"])
         self.assertTrue(d["StandardOutPath"].startswith(str(self.logdir)))
         self.assertTrue(d["StandardErrorPath"].startswith(str(self.logdir)))
+        self.assertEqual(plist_xml("/usr/bin/python3", "/opt/app/launch.py"),
+                         launchd.plist_xml("/usr/bin/python3", "/opt/app/launch.py"))
 
     def test_install_and_uninstall_use_injected_paths(self):
         agents = Path(self.tmp.name) / "LaunchAgents"
@@ -188,8 +191,7 @@ class PlistTest(unittest.TestCase):
             calls.append(list(args))
             return subprocess.CompletedProcess(args, 0, b"", b"")
 
-        p = schedule.install(python="/usr/bin/python3", script="/opt/fbk.py",
-                             agents_dir=agents, runner=runner, uid=501)
+        p = launchd.install("/usr/bin/python3", "/opt/app/launch.py", agents_dir=agents, runner=runner, uid=501)
         self.assertEqual(p, agents / "local.feishu-backup.plist")
         self.assertEqual(plistlib.loads(p.read_bytes())["ProgramArguments"][-1], "run")
         self.assertTrue(self.logdir.is_dir())
@@ -198,7 +200,7 @@ class PlistTest(unittest.TestCase):
             ["launchctl", "bootstrap", "gui/501", str(p)],
         ])
         calls.clear()
-        schedule.uninstall(agents_dir=agents, runner=runner, uid=501)
+        launchd.uninstall(agents_dir=agents, runner=runner, uid=501)
         self.assertFalse(p.exists())
         self.assertEqual(calls, [["launchctl", "bootout", "gui/501/local.feishu-backup"]])
 
@@ -209,7 +211,7 @@ class PlistTest(unittest.TestCase):
             rc = 3 if args[1] == "bootout" else 0
             return subprocess.CompletedProcess(args, rc, b"", b"")
 
-        schedule.install(python="p", script="s", agents_dir=agents, runner=runner, uid=1)
+        launchd.install("p", "s", agents_dir=agents, runner=runner, uid=1)
 
     def test_install_raises_when_bootstrap_fails(self):
         agents = Path(self.tmp.name) / "LaunchAgents"
@@ -219,8 +221,7 @@ class PlistTest(unittest.TestCase):
             return subprocess.CompletedProcess(args, rc, b"", "boom".encode())
 
         with self.assertRaises(RuntimeError):
-            schedule.install(python="p", script="s", agents_dir=agents, runner=runner, uid=1,
-                             sleep=lambda s: None)
+            launchd.install("p", "s", agents_dir=agents, runner=runner, uid=1, sleep=lambda s: None)
 
     def test_bootstrap_eio_retried_once(self):
         # 终审 M-2：bootout 之后立刻 bootstrap 可能 EIO，等 1 秒重试一次
@@ -234,71 +235,124 @@ class PlistTest(unittest.TestCase):
                 return subprocess.CompletedProcess(args, rc, b"", b"Input/output error")
             return subprocess.CompletedProcess(args, 0, b"", b"")
 
-        schedule.install(python="p", script="s", agents_dir=agents, runner=runner, uid=1, sleep=sleeps.append)
+        launchd.install("p", "s", agents_dir=agents, runner=runner, uid=1, sleep=sleeps.append)
         self.assertEqual(len(boots), 2)
         self.assertEqual(sleeps, [1])
 
 
+def _ok(args, **kw):
+    return subprocess.CompletedProcess(args, 0, b"", b"")
+
+
 class AppCopyTest(unittest.TestCase):
-    """终审 I1：定时任务不指向会被插件更新清掉的缓存目录，而是复制一份到 Application Support。"""
+    """终审 I1 + 小问题 2：定时任务不指向插件缓存，而是指向按版本存放的程序副本的启动器。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.app = self.base / "AppSupport" / "feishu-backup" / "app"
+        self.agents = self.base / "LaunchAgents"
         p = mock.patch.object(config, "LOG_DIR", self.base / "logs")
         p.start()
         self.addCleanup(p.stop)
 
-    def test_install_app_copies_scripts_and_replaces(self):
-        script = schedule.install_app(app_dir=self.app)
-        self.assertEqual(script, self.app / "fbk.py")
-        self.assertTrue(script.is_file())
-        self.assertTrue((self.app / "fbk" / "runner.py").is_file())
-        self.assertFalse(list(self.app.rglob("__pycache__")))
-        stale = self.app / "fbk" / "old_module.py"
-        stale.write_text("x")
-        schedule.install_app(app_dir=self.app)
-        self.assertFalse(stale.exists())
-        self.assertEqual(sorted(p.name for p in self.app.parent.iterdir()), ["app"])  # 不留临时目录
+    def test_install_app_versioned_copy(self):
+        launcher = schedule.install_app(app_root=self.app)
+        self.assertEqual(launcher, self.app / "launch.py")
+        v = self.app / "versions" / schedule.__version__
+        self.assertTrue((v / "fbk.py").is_file())
+        self.assertTrue((v / "fbk" / "runner.py").is_file())
+        self.assertEqual((self.app / "current").read_text(encoding="utf-8"), schedule.__version__)
 
-    def test_install_points_plist_at_app_copy(self):
-        agents = self.base / "LaunchAgents"
-        ok = lambda args, **kw: subprocess.CompletedProcess(args, 0, b"", b"")  # noqa: E731
-        p = schedule.install(python="/usr/bin/python3", agents_dir=agents, runner=ok, uid=1, app_dir=self.app)
-        args = plistlib.loads(p.read_bytes())["ProgramArguments"]
-        self.assertEqual(args[3], str(self.app / "fbk.py"))
+    def test_mac_install_points_plist_at_launcher(self):
+        p = schedule.install(python="/usr/bin/python3", agents_dir=self.agents, runner=_ok, uid=1,
+                             app_root=self.app, is_windows=False)
+        self.assertEqual(Path(p), self.agents / "local.feishu-backup.plist")
+        args = plistlib.loads(Path(p).read_bytes())["ProgramArguments"]
+        self.assertEqual(args[3], str(self.app / "launch.py"))
         self.assertTrue(Path(args[3]).is_file())
         self.assertNotIn("plugins", args[3])
+
+    def test_windows_install_dispatches_to_schtasks(self):
+        calls, files = [], []
+
+        def runner(args, **kw):
+            calls.append(list(args))
+            if "/Create" in args:
+                files.append(Path(args[args.index("/XML") + 1]).read_bytes().decode("utf-16"))
+            return subprocess.CompletedProcess(args, 0, b"", b"")
+
+        with mock.patch.object(winsched.tempfile, "tempdir", str(self.base)):
+            out = schedule.install(python=r"C:\Py\pythonw.exe", runner=runner, app_root=self.app,
+                                   is_windows=True, user="FAKEPC\\fakeuser")
+        self.assertIn("feishu-backup", str(out))
+        self.assertEqual(calls[0][:4], ["schtasks", "/Create", "/TN", "feishu-backup"])
+        self.assertEqual(winsched.parse_exec(files[0]), (r"C:\Py\pythonw.exe", str(self.app / "launch.py")))
+        self.assertFalse(self.agents.exists())
+
+    def test_windows_uninstall_and_verify_dispatch(self):
+        calls = []
+
+        def runner(args, **kw):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(args, 1, b"", b"")
+
+        schedule.uninstall(runner=runner, is_windows=True)
+        self.assertIsNone(schedule.verify(runner=runner, is_windows=True))
+        self.assertTrue(all(c[0] == "schtasks" for c in calls))
 
     def test_pick_python_prefers_system_python_when_new_enough(self):
         good = lambda args, **kw: subprocess.CompletedProcess(args, 0, "True\n", "")  # noqa: E731
         old = lambda args, **kw: subprocess.CompletedProcess(args, 0, "False\n", "")  # noqa: E731
-        self.assertEqual(schedule.pick_python(runner=good, exists=lambda p: True), "/usr/bin/python3")
-        self.assertEqual(schedule.pick_python(runner=old, exists=lambda p: True), sys.executable)
-        self.assertEqual(schedule.pick_python(runner=good, exists=lambda p: False), sys.executable)
+        kw = {"is_windows": False}
+        self.assertEqual(schedule.pick_python(runner=good, exists=lambda p: True, **kw), "/usr/bin/python3")
+        self.assertEqual(schedule.pick_python(runner=old, exists=lambda p: True, **kw), sys.executable)
+        self.assertEqual(schedule.pick_python(runner=good, exists=lambda p: False, **kw), sys.executable)
 
         def boom(args, **kw):
             raise OSError("no")
-        self.assertEqual(schedule.pick_python(runner=boom, exists=lambda p: True), sys.executable)
+        self.assertEqual(schedule.pick_python(runner=boom, exists=lambda p: True, **kw), sys.executable)
+
+    def test_pick_python_windows_prefers_pythonw(self):
+        exe = r"C:\Python312\python.exe"
+        seen = []
+
+        def exists(p):
+            seen.append(p)
+            return True
+
+        got = schedule.pick_python(exists=exists, is_windows=True, executable=exe)
+        self.assertEqual(got.replace("/", "\\"), r"C:\Python312\pythonw.exe")
+        self.assertEqual(schedule.pick_python(exists=lambda p: False, is_windows=True, executable=exe), exe)
 
     def _installed(self):
-        agents = self.base / "LaunchAgents"
-        ok = lambda args, **kw: subprocess.CompletedProcess(args, 0, b"", b"")  # noqa: E731
-        with mock.patch.object(schedule, "CAFFEINATE", sys.executable):
-            return schedule.install(python=sys.executable, agents_dir=agents, runner=ok, uid=1, app_dir=self.app)
+        with mock.patch.object(launchd, "CAFFEINATE", sys.executable):
+            return schedule.install(python=sys.executable, agents_dir=self.agents, runner=_ok, uid=1,
+                                    app_root=self.app, is_windows=False)
 
-    def test_verify_ok_missing_script_and_version_mismatch(self):
+    def test_verify_ok_missing_launcher_and_version_mismatch(self):
         plist = self._installed()
-        self.assertEqual(schedule.verify(plist), [])
-        init = self.app / "fbk" / "__init__.py"
-        init.write_text('__version__ = "0.0.9"\n')
-        probs = schedule.verify(plist)
+        self.assertEqual(schedule.verify(plist, is_windows=False), [])
+        (self.app / "current").write_text("0.0.9")
+        probs = schedule.verify(plist, is_windows=False)
         self.assertTrue(any("0.0.9" in p for p in probs), probs)
-        (self.app / "fbk.py").unlink()
-        self.assertTrue(any("fbk.py" in p for p in schedule.verify(plist)))
-        self.assertIsNone(schedule.verify(self.base / "nope.plist"))  # 没装定时任务
+        (self.app / "launch.py").unlink()
+        self.assertTrue(any("launch.py" in p for p in schedule.verify(plist, is_windows=False)))
+        self.assertIsNone(schedule.verify(self.base / "nope.plist", is_windows=False))  # 没装定时任务
+
+    def test_verify_default_plist_uses_agents_dir(self):
+        self._installed()
+        with mock.patch.object(schedule, "default_agents_dir", return_value=self.agents):
+            self.assertEqual(schedule.verify(is_windows=False), [])
+
+    def test_verify_old_plist_without_launcher(self):
+        self.agents.mkdir(parents=True)
+        (self.agents / "local.feishu-backup.plist").write_bytes(
+            launchd.plist_xml(sys.executable, str(self.base / "cache" / "fbk.py")))
+        with mock.patch.object(launchd, "CAFFEINATE", sys.executable):
+            probs = schedule.verify(self.agents / "local.feishu-backup.plist", is_windows=False)
+        self.assertTrue(probs)
 
 
 if __name__ == "__main__":

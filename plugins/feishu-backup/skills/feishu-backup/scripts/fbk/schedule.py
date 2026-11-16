@@ -1,36 +1,36 @@
-"""调度：是否到期、运行锁、LaunchAgent 安装与卸载。"""
+"""调度：是否到期、运行锁；定时任务的安装 / 卸载 / 校验按系统转给 platform.launchd / platform.winsched，
+程序副本（按版本存放 + 启动器）由 platform.appcopy 负责。"""
+import ntpath
 import os
-import plistlib
-import re
-import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from . import __version__, config
-from .platform import fsnames, lock as _lock
+from . import platform as _plat
+from .platform import appcopy, fsnames, launchd, lock as _lock, paths as _paths, winsched
 
-LABEL = "local.feishu-backup"
-START_INTERVAL = 3600
 LOCK_NAME = "run.lock"
 STATE_DIR = ".feishu-backup"
 
-
-CAFFEINATE = "/usr/bin/caffeinate"
+IS_WINDOWS = _plat.IS_WINDOWS  # 模块级，测试可替换
 SYSTEM_PYTHON = "/usr/bin/python3"
-_VERSION_RE = re.compile(r"""__version__\s*=\s*["']([^"']+)["']""")
+LABEL = launchd.LABEL
+START_INTERVAL = launchd.START_INTERVAL
+TASK_NAME = winsched.TASK_NAME
+plist_xml = launchd.plist_xml
 
 
 def default_agents_dir() -> Path:
-    return Path.home() / "Library" / "LaunchAgents"
+    return launchd.default_agents_dir()
 
 
-def default_app_dir() -> Path:
-    """定时任务实际运行的程序副本。插件缓存目录会在插件更新时被清掉，所以不能直接指向它。"""
-    return Path.home() / "Library" / "Application Support" / "feishu-backup" / "app"
+def default_app_root() -> Path:
+    """程序副本所在（launch.py、current、versions/）。插件缓存目录会在插件更新时被清掉，所以不能直接指向它。"""
+    return _paths.app_root()
 
 
 def default_script() -> Path:
@@ -38,7 +38,6 @@ def default_script() -> Path:
 
 
 RETRY_AFTER_INCOMPLETE = 6 * 3600
-_WEEKDAYS = "一二三四五六日"
 _WEEKDAYS = "一二三四五六日"
 parse_time = config.parse_time  # 与加载配置共用同一套规则
 
@@ -142,31 +141,26 @@ class RunLock:
         return False
 
 
-def install_app(src_dir: Optional[Path] = None, app_dir: Optional[Path] = None) -> Path:
-    """把 scripts/（fbk.py + fbk/）复制到 app_dir：先复制到同级临时目录，再换名替换旧副本。返回 fbk.py 路径。
-    app_dir 里只有程序自己的代码，不含任何备份数据。"""
+def _win(is_windows: Optional[bool]) -> bool:
+    return IS_WINDOWS if is_windows is None else is_windows
+
+
+def install_app(src_dir: Optional[Path] = None, app_root: Optional[Path] = None) -> Path:
+    """把 scripts/（fbk.py + fbk/）复制成 app_root/versions/<当前版本>/ 并更新 current 和启动器。返回启动器路径。
+    app_root 里只有程序自己的代码，不含任何备份数据。"""
     src = Path(src_dir) if src_dir is not None else default_script().parent
-    app = Path(app_dir) if app_dir is not None else default_app_dir()
-    app.parent.mkdir(parents=True, exist_ok=True)
-    tmp = app.with_name(".%s.new-%d" % (app.name, os.getpid()))
-    old = app.with_name(".%s.old-%d" % (app.name, os.getpid()))
-    for d in (tmp, old):
-        if d.exists():
-            shutil.rmtree(str(d))
-    ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
-    tmp.mkdir()
-    shutil.copy2(str(src / "fbk.py"), str(tmp / "fbk.py"))
-    shutil.copytree(str(src / "fbk"), str(tmp / "fbk"), ignore=ignore)
-    if app.exists():
-        os.replace(str(app), str(old))
-    os.replace(str(tmp), str(app))
-    if old.exists():
-        shutil.rmtree(str(old), ignore_errors=True)
-    return app / "fbk.py"
+    root = Path(app_root) if app_root is not None else default_app_root()
+    return appcopy.install(src, root, __version__)
 
 
-def pick_python(runner=subprocess.run, exists=os.path.exists) -> str:
-    """优先用系统自带的 /usr/bin/python3（升级 Homebrew 等不会让它消失），要求 ≥3.9；否则用当前解释器。"""
+def pick_python(runner=subprocess.run, exists=os.path.exists, is_windows: Optional[bool] = None,
+                executable: Optional[str] = None) -> str:
+    """mac：优先用系统自带的 /usr/bin/python3（升级 Homebrew 等不会让它消失），要求 ≥3.9；否则用当前解释器。
+    Windows：用当前解释器同目录的 pythonw.exe（不弹黑窗口），没有就用当前解释器。"""
+    exe = executable or sys.executable
+    if _win(is_windows):
+        w = ntpath.join(ntpath.dirname(exe), "pythonw.exe")
+        return w if exists(w) else exe
     if exists(SYSTEM_PYTHON):
         try:
             r = runner([SYSTEM_PYTHON, "-c", "import sys; print(sys.version_info[:2] >= (3, 9))"],
@@ -175,88 +169,36 @@ def pick_python(runner=subprocess.run, exists=os.path.exists) -> str:
                 return SYSTEM_PYTHON
         except (OSError, subprocess.SubprocessError):
             pass
-    return sys.executable
+    return exe
 
 
-def installed_version(script: Path) -> Optional[str]:
-    try:
-        m = _VERSION_RE.search((Path(script).parent / "fbk" / "__init__.py").read_text(encoding="utf-8"))
-    except OSError:
-        return None
-    return m.group(1) if m else None
-
-
-def verify(plist_path: Optional[Path] = None) -> Optional[List[str]]:
-    """检查已装的定时任务还能不能跑：ProgramArguments 里的路径都在、程序副本版本与当前一致。
-    没装返回 None；正常返回 []；否则返回中文问题列表（修法：重新运行 setup --schedule）。"""
-    path = Path(plist_path) if plist_path is not None else default_agents_dir() / (LABEL + ".plist")
-    if not path.exists():
-        return None
-    try:
-        args = plistlib.loads(path.read_bytes()).get("ProgramArguments") or []
-    except Exception as e:  # noqa: BLE001
-        return ["定时任务配置文件读不了：%s" % e]
-    probs = []
-    for a in args:
-        if str(a).startswith("/") and not os.path.exists(str(a)):
-            probs.append("找不到 %s" % a)
-    scripts = [a for a in args if str(a).endswith("fbk.py")]
-    if not scripts:
-        probs.append("定时任务里没有备份程序")
-    elif os.path.exists(scripts[0]):
-        v = installed_version(Path(scripts[0]))
-        if v != __version__:
-            probs.append("定时任务用的程序版本是 %s，当前插件是 %s" % (v or "未知", __version__))
-    return probs
-
-
-def plist_xml(python: str, script: str) -> bytes:
-    logdir = config.LOG_DIR
-    return plistlib.dumps({
-        "Label": LABEL,
-        "ProgramArguments": [CAFFEINATE, "-i", str(python), str(script), "run"],
-        "RunAtLoad": True,
-        "StartInterval": START_INTERVAL,
-        "StandardOutPath": str(logdir / "launchd.out.log"),
-        "StandardErrorPath": str(logdir / "launchd.err.log"),
-    })
-
-
-def _launchctl(runner, *args):
-    return runner(["launchctl"] + list(args), capture_output=True)
-
-
-def install(python: Optional[str] = None, script: Optional[str] = None, agents_dir: Optional[Path] = None,
-            runner=subprocess.run, uid: Optional[int] = None, app_dir: Optional[Path] = None,
-            sleep=time.sleep) -> Path:
-    """复制程序到 app_dir，写 ~/Library/LaunchAgents/local.feishu-backup.plist，
-    先 bootout 旧的（忽略失败）再 bootstrap（失败等 1 秒重试一次）。"""
-    agents_dir = Path(agents_dir) if agents_dir is not None else default_agents_dir()
-    uid = os.getuid() if uid is None else uid
-    if script is None:
-        script = str(install_app(app_dir=app_dir))
+def install(python: Optional[str] = None, launcher: Optional[str] = None, *, app_root: Optional[Path] = None,
+            agents_dir: Optional[Path] = None, runner=subprocess.run, uid: Optional[int] = None,
+            sleep=time.sleep, is_windows: Optional[bool] = None, user: Optional[str] = None):
+    """先复制程序副本（没给 launcher 时），再装定时任务。返回装好的位置（mac：plist 路径；Windows：说明文字）。"""
+    if launcher is None:
+        launcher = str(install_app(app_root=app_root))
     if python is None:
-        python = pick_python()
-    config.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    agents_dir.mkdir(parents=True, exist_ok=True)
-    path = agents_dir / (LABEL + ".plist")
-    path.write_bytes(plist_xml(python, script))
-    _launchctl(runner, "bootout", "gui/%d/%s" % (uid, LABEL))
-    r = _launchctl(runner, "bootstrap", "gui/%d" % uid, str(path))
-    if r.returncode != 0:  # 刚 bootout 完立刻 bootstrap 偶尔报 EIO（5）
-        sleep(1)
-        r = _launchctl(runner, "bootstrap", "gui/%d" % uid, str(path))
-    if r.returncode != 0:
-        err = r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes) else (r.stderr or "")
-        raise RuntimeError("launchctl bootstrap 失败（%s）：%s" % (r.returncode, err.strip()))
-    return path
+        python = pick_python(is_windows=is_windows)
+    if _win(is_windows):
+        name = winsched.install(winsched.task_xml(python, launcher, user or winsched.default_user()), runner=runner)
+        return "任务计划程序里的「%s」" % name
+    return launchd.install(python, launcher, agents_dir=agents_dir if agents_dir is not None else default_agents_dir(),
+                           runner=runner, uid=uid, sleep=sleep)
 
 
-def uninstall(agents_dir: Optional[Path] = None, runner=subprocess.run, uid: Optional[int] = None) -> None:
-    agents_dir = Path(agents_dir) if agents_dir is not None else default_agents_dir()
-    uid = os.getuid() if uid is None else uid
-    _launchctl(runner, "bootout", "gui/%d/%s" % (uid, LABEL))
-    try:
-        (agents_dir / (LABEL + ".plist")).unlink()
-    except FileNotFoundError:
-        pass
+def uninstall(agents_dir: Optional[Path] = None, runner=subprocess.run, uid: Optional[int] = None,
+              is_windows: Optional[bool] = None) -> None:
+    if _win(is_windows):
+        winsched.uninstall(runner=runner)
+        return
+    launchd.uninstall(agents_dir=agents_dir if agents_dir is not None else default_agents_dir(), runner=runner, uid=uid)
+
+
+def verify(plist_path: Optional[Path] = None, runner=subprocess.run,
+           is_windows: Optional[bool] = None) -> Optional[List[str]]:
+    """检查已装的定时任务还能不能跑。没装返回 None；正常返回 []；否则返回中文问题列表（修法：重新运行 setup --schedule）。"""
+    if _win(is_windows):
+        return winsched.verify(runner=runner, expected_version=__version__)
+    path = Path(plist_path) if plist_path is not None else default_agents_dir() / (LABEL + ".plist")
+    return launchd.verify(path, expected_version=__version__)

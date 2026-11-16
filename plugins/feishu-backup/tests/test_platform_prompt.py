@@ -1,7 +1,10 @@
 """platform.prompt.ask：mac osascript；Windows tkinter，回退 PowerShell。全部离线注入。"""
 import base64
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from fbk import wizard
 from fbk.platform import prompt as pp
@@ -237,12 +240,22 @@ class WindowsPowerShellFallbackTest(unittest.TestCase):
     def test_no_console_tells_user_command(self):
         def run(cmd, **kw):
             raise AssertionError("must not run without a console")
-        with self.assertRaises(wizard.Cancelled) as cm:
-            pp.ask("p", True, runner=run, is_windows=True, tk_factory=self._no_tk, isatty=lambda: False)
+        with mock.patch.object(pp._paths, "app_root", return_value=Path("/nonexistent-fbk-app")):
+            with self.assertRaises(wizard.Cancelled) as cm:
+                pp.ask("p", True, runner=run, is_windows=True, tk_factory=self._no_tk, isatty=lambda: False)
         msg = str(cm.exception)
         self.assertIn("py -3", msg)
         self.assertIn("setup --credentials", msg)
         self.assertIn("fbk.py", msg)
+
+    def test_no_console_names_installed_launcher_when_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "launch.py").write_text("x")
+            with mock.patch.object(pp._paths, "app_root", return_value=Path(d)):
+                with self.assertRaises(wizard.Cancelled) as cm:
+                    pp.ask("p", True, runner=None, is_windows=True, tk_factory=self._no_tk, isatty=lambda: False)
+        self.assertIn(str(Path(d) / "launch.py"), str(cm.exception))
+        self.assertIn("setup --credentials", str(cm.exception))
 
     def test_powershell_missing(self):
         def boom(c, **k):

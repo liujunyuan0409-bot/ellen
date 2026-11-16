@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""飞书备份唯一入口。由 Claude Code（Bash，非交互）和 launchd（fbk.py run）调用。
+"""飞书备份唯一入口。由 Claude Code（Bash，非交互）和定时任务（经程序副本的 launch.py 运行 run）调用。
 
-子命令：setup / doctor / login / scan / run / status / perms / schedule。
+子命令：install / setup / doctor / login / scan / run / status / perms / schedule。
 每个命令都打印中文说明；加 --json 时输出机器可读的 JSON。
 退出码：检查失败为 1；run 原样返回 runner 的退出码（0/1/2/3/4）。
 """
@@ -90,16 +90,12 @@ def _make_client(cfg):
     return FeishuClient(tm.access_token)
 
 
-def _plist():
-    return schedule.default_agents_dir() / (schedule.LABEL + ".plist")
-
-
 SCHEDULE_FIX = "重新运行 setup --schedule（插件更新或换了 Python 之后都要重新运行一次）"
 
 
 def _schedule_check():
     """已装定时任务时检查它还能不能跑；没装返回 None。"""
-    probs = schedule.verify(_plist())
+    probs = schedule.verify()
     if probs is None:
         return None
     if probs:
@@ -191,6 +187,27 @@ def _next_run_dt(cfg) -> datetime:
     return schedule.next_slot(datetime.now().astimezone(), cfg.schedule_weekday, hh, mm)
 
 
+def _launch_cmd() -> str:
+    """用户手动运行程序副本的命令（启动器不在时退回仓库里的 fbk.py）。"""
+    launcher = schedule.default_app_root() / "launch.py"
+    target = launcher if launcher.is_file() else schedule.default_script()
+    return ('py -3 "%s"' if schedule.IS_WINDOWS else 'python3 "%s"') % target
+
+
+def cmd_install(args):
+    try:
+        launcher = schedule.install_app()
+    except Exception as e:  # noqa: BLE001
+        return _checks_out(args, [wizard.Check("程序副本", False, "复制失败：%s" % e, "把这一行发给 Claude 排查")])
+    app_dir = launcher.parent / "versions" / schedule.__version__
+    data = {"ok": True, "launcher": str(launcher), "app_dir": str(app_dir), "version": schedule.__version__}
+    text = ("程序副本已复制好（版本 %s）：%s\n启动器：%s\n"
+            "这一步没有安装定时任务；要每周自动备份，请运行 setup --schedule。") % (
+        schedule.__version__, app_dir, launcher)
+    _emit(args, data, text)
+    return 0
+
+
 def cmd_schedule_install(args, title="[7/7] 定时任务"):
     cfg = _cfg_or_none()
     if cfg is None or not cfg.backup_root:
@@ -213,9 +230,9 @@ def cmd_schedule_install(args, title="[7/7] 定时任务"):
         path = schedule.install()
     except Exception as e:  # noqa: BLE001
         return _checks_out(args, [wizard.Check("定时任务", False, "安装失败：%s" % e, "把这一行发给 Claude 排查")], title)
-    detail = "已安装（%s）。计划：%s（本机时区），每周一次；电脑关机错过了，下次开机会自动补跑。下次计划：%s" % (
+    detail = "已安装（%s）。计划：%s（错过会在开机后补跑），本机时区。下次计划：%s" % (
         path, _slot_text(cfg), _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M"))
-    fix = "卸载：python3 %s schedule uninstall；插件更新后请重新运行 setup --schedule" % schedule.default_script()
+    fix = "卸载：%s schedule uninstall；插件更新后请重新运行 setup --schedule" % _launch_cmd()
     c = wizard.Check("定时任务", True, detail, fix)
     if args.json:
         return _checks_out(args, [c], title)
@@ -246,7 +263,7 @@ def _setup_steps():
         steps.append(("failed", "%s 不存在（外接盘没插？）" % root))
     sc = _load_state(SCAN_STATE)
     steps.append(("done", "%s 扫描过" % _fmt_ts(sc.get("at"))) if sc else ("todo", "运行 scan"))
-    steps.append(("done", "已安装") if _plist().exists() else ("todo", "运行 setup --schedule"))
+    steps.append(("done", "已安装") if schedule.verify() is not None else ("todo", "运行 setup --schedule"))
     return [{"step": i + 1, "name": STEPS[i], "state": s, "detail": d} for i, (s, d) in enumerate(steps)]
 
 
@@ -333,9 +350,11 @@ def _status_data():
          "backup_root": str(root) if root else None, "root_exists": bool(root and root.is_dir()),
          "last_success": None, "last_success_text": "从未成功", "last_run": None,
          "schedule_text": None, "next_run_text": None, "schedule_problem": None,
-         "schedule_installed": _plist().exists(), "schedule_problems": schedule.verify(_plist()) or [],
+         "schedule_installed": False, "schedule_problems": [],
          "counts": {"items": {}, "attachments": {}, "links": {}},
          "reports": {"log": None, "perms": None}}
+    probs = schedule.verify()
+    d["schedule_installed"], d["schedule_problems"] = probs is not None, probs or []
     if cfg:
         try:
             d["schedule_text"] = _slot_text(cfg)
@@ -458,6 +477,8 @@ def build_parser():
     s.add_argument("--create", action="store_true", help="配合 --root：目录不存在时新建")
     s.set_defaults(func=cmd_setup)
 
+    sub.add_parser("install", parents=[common],
+                   help="把程序复制到本机固定位置并打印位置（不装定时任务）").set_defaults(func=cmd_install)
     sub.add_parser("login", parents=[common], help="重新登录（同 setup --login）").set_defaults(func=cmd_login)
     sub.add_parser("doctor", parents=[common], help="权限体检（8 项实测）").set_defaults(func=cmd_doctor)
     sub.add_parser("scan", parents=[common], help="只统计不下载").set_defaults(func=cmd_scan)

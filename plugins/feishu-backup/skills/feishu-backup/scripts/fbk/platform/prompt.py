@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import IS_WINDOWS
+from . import paths as _paths
 from .ps import encode_command
 
 log = logging.getLogger(__name__)
@@ -19,6 +20,10 @@ class PromptCancelled(Exception):
 
 
 def _launch_path() -> str:
+    """已复制过程序副本就指向它的启动器，否则指向当前这份 fbk.py。"""
+    launcher = _paths.app_root() / "launch.py"
+    if launcher.is_file():
+        return str(launcher)
     return str(Path(__file__).resolve().parents[2] / "fbk.py")
 
 
