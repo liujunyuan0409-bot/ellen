@@ -83,19 +83,26 @@ def _listdir(d: Path) -> Iterable[str]:
         return ()
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    """a、b 是否是磁盘上的同一个文件（同一 inode / 文件 ID）。出错一律按「不是」处理（更保守）。"""
+    try:
+        return os.path.samefile(lp(a), lp(b))
+    except (OSError, ValueError):
+        return False
+
+
 def is_taken(path: Path, ignore: Optional[Path] = None) -> bool:
     """path 是否已被占用：同目录下有名字 fold() 相同的条目（含完全同名）即算占用。
-    ignore 是调用方自己的文件（例如同一 token 当前的文件），它不算占用。"""
+    ignore 是调用方自己的文件（例如同一 token 当前的文件）：只有确认是磁盘上同一个文件的条目才不算占用
+    （按 samefile 判断，所以上级目录大小写不同、磁盘名是 NFD 也认得出；大小写敏感的卷上不同文件仍算占用）。"""
     path = Path(path)
     key = fold(path.name)
-    ignore_name = None
-    if ignore is not None and Path(ignore).parent == path.parent:
-        ignore_name = Path(ignore).name
-    if os.path.lexists(lp(path)) and (ignore_name is None or fold(ignore_name) != key):
+    if os.path.lexists(lp(path)) and (ignore is None or not _same_file(path, ignore)):
         return True
     for e in _listdir(path.parent):
-        if e == ignore_name:
+        if fold(e) != key:
             continue
-        if fold(e) == key:
-            return True
+        if ignore is not None and _same_file(path.parent / e, ignore):
+            continue
+        return True
     return False

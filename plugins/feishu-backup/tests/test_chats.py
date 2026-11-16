@@ -220,6 +220,25 @@ class SaveAttachmentTest(unittest.TestCase):
         self.assertGreaterEqual(spy.ops["replace"], 2)
         self.assertGreaterEqual(spy.ops["unlink"], 1)
 
+    def test_attachment_tmp_names_differ_for_similar_keys(self):
+        # file_key 前缀常常相同（file_v3_00xx_…），临时名不能只取前缀
+        captured = []
+
+        class F(_Fetch):
+            def download_attachment(self, client, mid, fk, dest):
+                captured.append(Path(dest).name)
+                raise ApiError(500, "stop")
+        t = FakeTransport()
+        ctx = self.ctx(t)
+        ctx.fetch = F()
+        k1 = "file_v3_00ab_" + "x" * 20 + "1"
+        k2 = "file_v3_00ab_" + "x" * 20 + "2"
+        chats.save_attachment(ctx, self.hit(k1, "a.txt", "m1"))
+        chats.save_attachment(ctx, self.hit(k2, "a.txt", "m2"))
+        self.assertEqual(len(captured), 2)
+        self.assertNotEqual(captured[0], captured[1])
+        self.assertTrue(all(n.startswith(".dl-") and n.endswith(".fbk-new") for n in captured))
+
     def test_failure_recorded(self):
         t = FakeTransport()
         t.queue_json("GET", "/im/v1/messages/m1/resources/fk1", code=234001, msg="expired", status=400)

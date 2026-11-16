@@ -1,4 +1,5 @@
 """群消息扫描：从群聊里发现文档链接和文件附件，并把附件备份下来。只读。"""
+import hashlib
 import json
 import logging
 import os
@@ -172,7 +173,8 @@ def save_attachment(ctx, hit: AttachmentHit) -> Outcome:
         return Outcome.UNCHANGED
     folder = ctx.root / ATTACH_DIR / (sanitize(hit.chat_name) or hit.chat_id)
     desired = folder / sanitize(attachment_filename(hit.sent_at, hit.file_name))
-    tmp = folder / (".dl-%s.fbk-new" % re.sub(r"[^A-Za-z0-9]", "", hit.file_key)[:24])
+    # 临时名取完整 file_key 的哈希：file_key 前缀常常相同，截前缀会撞
+    tmp = folder / (".dl-%s.fbk-new" % hashlib.sha1(hit.file_key.encode("utf-8")).hexdigest()[:16])
     base = dict(chat_id=hit.chat_id, message_id=hit.message_id, file_name=hit.file_name,
                 chat_name=hit.chat_name, sent_at=hit.sent_at)
     ctx.fetch.ensure_space(ctx.root, 0)

@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import unicodedata
 import unittest
 from unittest import mock
 from datetime import datetime
@@ -52,6 +53,12 @@ class FakeFetch:
 
 def item(token, name, rel_dir=("我的空间",), ftype="docx", source="my", mtime=T1):
     return RemoteItem(token, ftype, name, tuple(rel_dir), source, mtime)
+
+
+def _normalization_insensitive() -> bool:
+    with tempfile.TemporaryDirectory() as t:
+        Path(t, unicodedata.normalize("NFC", "é")).write_text("x")
+        return os.path.exists(os.path.join(t, unicodedata.normalize("NFD", "é")))
 
 
 class SyncTest(unittest.TestCase):
@@ -542,6 +549,80 @@ class SyncTest(unittest.TestCase):
         # 下一轮稳定
         self.new_run()
         self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "report", mtime=T2)), Outcome.UNCHANGED)
+
+    # ---- 修复轮 1 ----
+    def test_parent_folder_case_rename_no_extra_suffix(self):
+        # 云端文件夹 Docs → docs：自己的文件不算占用，不能变成 a (doxAAA).pdf，下一轮也不来回搬
+        self.fetch.content["doxAAAAAA1"] = b"A"
+        sync_item(self.ctx, item("doxAAAAAA1", "a", rel_dir=("我的空间", "Docs")))
+        self.new_run()
+        out = sync_item(self.ctx, item("doxAAAAAA1", "a", rel_dir=("我的空间", "docs")))
+        self.assertIn(out, (Outcome.MOVED, Outcome.UNCHANGED))
+        names = [Path(f).name for f in self.all_files()]
+        self.assertEqual(names, ["a.pdf"])
+        self.assertEqual(Path(self.store.get_item("doxAAAAAA1")["local_path"]).read_bytes(), b"A")
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, item("doxAAAAAA1", "a", rel_dir=("我的空间", "docs"))),
+                         Outcome.UNCHANGED)
+        self.assertEqual([Path(f).name for f in self.all_files()], ["a.pdf"])
+
+    @unittest.skipUnless(_normalization_insensitive(), "需要不区分 Unicode 规范化的文件系统（如 APFS）")
+    def test_nfd_on_disk_case_rename_no_extra_suffix(self):
+        # 磁盘上是 NFD 的 Café.pdf，清单记的是 NFC；云端改成 café → 原地改写法，不追加 (doxBBB)
+        d = self.root / "我的空间"
+        self.fetch.content["doxBBBBBB2"] = b"B"
+        sync_item(self.ctx, item("doxBBBBBB2", "Café"))
+        os.rename(str(d / "Café.pdf"), str(d / "tmp.pdf"))
+        os.rename(str(d / "tmp.pdf"), str(d / unicodedata.normalize("NFD", "Café.pdf")))
+        self.new_run()
+        sync_item(self.ctx, item("doxBBBBBB2", "café"))
+        self.assertEqual([unicodedata.normalize("NFC", n) for n in os.listdir(str(d))], ["café.pdf"])
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, item("doxBBBBBB2", "café")), Outcome.UNCHANGED)
+        self.assertEqual([unicodedata.normalize("NFC", n) for n in os.listdir(str(d))], ["café.pdf"])
+
+    def test_nfd_history_carried_on_rename(self):
+        self.fetch.content["doxFAKE01"] = b"v2"
+        sync_item(self.ctx, item("doxFAKE01", "Café", mtime=T2))
+        hist = self.root / "我的空间" / "历史版本"
+        hist.mkdir()
+        (hist / unicodedata.normalize("NFD", "Café_2025-10-02_1530.pdf")).write_bytes(b"v1")
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, item("doxFAKE01", "かな", mtime=T2)), Outcome.MOVED)
+        self.assertEqual(os.listdir(str(hist)), ["かな_2025-10-02_1530.pdf"])
+        self.assertEqual((hist / "かな_2025-10-02_1530.pdf").read_bytes(), b"v1")
+
+    def test_tmp_names_differ_for_tokens_sharing_prefix(self):
+        p = self.root / "我的空间" / "周报.pdf"
+        a, b = sync._tmp_for(p, "doxcnA1111"), sync._tmp_for(p, "doxcnA2222")
+        self.assertNotEqual(a, b)
+        self.assertEqual(sync._tmp_for(p, "doxcnA1111"), a)  # 稳定
+        long_p = p.with_name("长" * 83 + "ab.pdf")
+        for t in (sync._tmp_for(long_p, "doxcnA1111"), sync._tmp_for(long_p, "doxcnA2222")):
+            self.assertLessEqual(len((t.name + ".fbk-part").encode("utf-8")), 255)
+            self.assertTrue(t.name.endswith(".fbk-new"))
+
+    def test_concurrent_tokens_sharing_prefix_get_own_content(self):
+        import threading
+        barrier = threading.Barrier(2)
+        orig = self.fetch._write
+
+        def slow_write(token, dest):
+            barrier.wait(timeout=5)
+            return orig(token, dest)
+        self.fetch._write = slow_write
+        self.fetch.content["doxcnA1111"] = b"a"
+        self.fetch.content["doxcnA2222"] = b"b"
+        ts = [threading.Thread(target=lambda t=t: sync_item(self.ctx, item(t, "周报")))
+              for t in ("doxcnA1111", "doxcnA2222")]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        dests = {tok: d for tok, d in self.fetch.calls}
+        self.assertNotEqual(dests["doxcnA1111"], dests["doxcnA2222"])
+        for tok, want in (("doxcnA1111", b"a"), ("doxcnA2222", b"b")):
+            self.assertEqual(Path(self.store.get_item(tok)["local_path"]).read_bytes(), want)
 
     def test_all_file_ops_go_through_lp(self):
         """sync / fetcher 里的 os.replace / unlink / makedirs 都必须用 lp() 处理过的路径。"""

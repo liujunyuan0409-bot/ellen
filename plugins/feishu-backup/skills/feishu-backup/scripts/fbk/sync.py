@@ -10,12 +10,14 @@
 「同一文件的第二个位置」（DUPLICATE）和「文件被移动」（MOVED）。去重只看本轮，
 不看清单里上一轮的来源。
 """
+import hashlib
 import json
 import logging
 import os
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -88,8 +90,19 @@ def _is_file(p: Path) -> bool:
     return os.path.isfile(lp(p))
 
 
+def _token_key(token: str) -> str:
+    """由完整 token 算出的短键（sha1 前 10 位）：前缀相同的 token（如 doxcn…）也不会撞。"""
+    return hashlib.sha1(token.encode("utf-8")).hexdigest()[:10]
+
+
 def _tmp_for(p: Path, token: str) -> Path:
-    """临时名带 token 前缀，并发时不撞名；连同 fetcher 的 .fbk-part 总长不超过 255 字节。"""
+    """临时名带完整 token 的哈希，并发时不撞名；连同 fetcher 的 .fbk-part 总长不超过 255 字节。"""
+    tail = "%s.%s%s" % (p.suffix, _token_key(token), TMP_SUFFIX)
+    return p.with_name(_fit(p.stem, tail, MAX_FS_BYTES - len(_PART_SUFFIX)))
+
+
+def _legacy_tmp_for(p: Path, token: str) -> Path:
+    """v0.1 的临时名（token 前 6 位），只用来清理升级前中断留下的残留。"""
     tail = "%s.%s%s" % (p.suffix, token[:6], TMP_SUFFIX)
     return p.with_name(_fit(p.stem, tail, MAX_FS_BYTES - len(_PART_SUFFIX)))
 
@@ -141,14 +154,15 @@ def _move_history(old: Path, new: Path) -> None:
     old_hist = old.parent / HISTORY_DIR
     if not os.path.isdir(lp(old_hist)):
         return
-    old_ext = os.path.splitext(old.name)[1]
+    old_name = _nfc(old.name)
+    old_ext = os.path.splitext(old_name)[1]
     new_stem, new_ext = os.path.splitext(new.name)
-    pat = re.compile(re.escape(_version_stem(old.name)) + r"(_\d{4}-\d{2}-\d{2}_\d{4}(?:-\d+)?)"
+    pat = re.compile(re.escape(_version_stem(old_name)) + r"(_\d{4}-\d{2}-\d{2}_\d{4}(?:-\d+)?)"
                      + re.escape(old_ext))
     new_hist = new.parent / HISTORY_DIR
     for name in sorted(os.listdir(lp(old_hist))):
-        f = old_hist / name
-        m = pat.fullmatch(name)
+        f = old_hist / name  # 搬的是磁盘上的真实条目
+        m = pat.fullmatch(_nfc(name))  # 匹配时按 NFC：NFD 卷上的带重音/假名的名字也认得出
         if not m or not _is_file(f) or os.path.islink(lp(f)):
             continue
         dest = new_hist / _fit(new_stem, m.group(1) + new_ext, MAX_FS_BYTES)
@@ -157,6 +171,10 @@ def _move_history(old: Path, new: Path) -> None:
         os.makedirs(lp(new_hist), exist_ok=True)
         dest = unique_path(dest, ignore=f)  # f 自己不算占用（只改大小写时原名即可）
         os.replace(lp(f), lp(dest))
+
+
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s)
 
 
 def _add_seen(store, row, location: str) -> None:
@@ -263,6 +281,7 @@ def _new(ctx, item, desired: Path, base: dict) -> Outcome:
     store = ctx.store
     tmp = _tmp_for(desired, item.token)
     _drop_tmp(tmp)  # 上次中断留下的
+    _drop_tmp(_legacy_tmp_for(desired, item.token))
     ctx.fetch.ensure_space(ctx.root, 0)
     try:
         _fetch_into(ctx, item, tmp)
@@ -293,6 +312,7 @@ def _update(ctx, item, local: Path, old_mtime, base: dict) -> bool:
     store = ctx.store
     tmp = _tmp_for(local, item.token)
     _drop_tmp(tmp)
+    _drop_tmp(_legacy_tmp_for(local, item.token))
     ctx.fetch.ensure_space(ctx.root, 0)
     try:
         _fetch_into(ctx, item, tmp)
