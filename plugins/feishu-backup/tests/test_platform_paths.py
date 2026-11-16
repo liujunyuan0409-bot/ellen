@@ -42,9 +42,16 @@ class WinPaths(unittest.TestCase):
 
 
 class Flags(unittest.TestCase):
-    def test_flags(self):
-        self.assertEqual(plat.IS_WINDOWS, sys.platform == "win32")
-        self.assertEqual(plat.IS_MAC, sys.platform == "darwin")
+    def _current(self, win, mac):
+        from unittest import mock
+        with mock.patch.object(plat, "IS_WINDOWS", win), mock.patch.object(plat, "IS_MAC", mac):
+            return plat.current()
+
+    def test_current_branches(self):
+        self.assertEqual(self._current(True, False), "windows")
+        self.assertEqual(self._current(False, True), "mac")
+        self.assertEqual(self._current(False, False), "other")
+        self.assertEqual(self._current(True, True), "windows")  # 两个都真时 Windows 优先（只是分支顺序）
 
     def test_config_module_attrs_are_paths(self):
         self.assertIsInstance(config.CONFIG_DIR, Path)
