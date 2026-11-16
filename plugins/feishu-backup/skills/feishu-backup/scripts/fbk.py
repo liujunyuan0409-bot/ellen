@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fbk import auth, config, runner, schedule, wizard  # noqa: E402
+from fbk import platform as fplat  # noqa: E402
 from fbk.client import FeishuClient  # noqa: E402
 from fbk.names import SHANGHAI  # noqa: E402
 from fbk.store import Store  # noqa: E402
@@ -35,24 +36,31 @@ MARK = {"done": "✓", "failed": "✗", "todo": "–"}
 
 # ---------------- 小工具 ----------------
 
-def _emit(args, data, text):
+WINDOWS_NOTICE = "⚠ Windows 版未经真机验证，遇到问题请对照 WINDOWS_CHECKLIST.md"
+
+
+def _emit(args, data, text, notice=False):
+    """notice=True（doctor / status）且在 Windows 上：文字输出第一行加标注，JSON 加 windows_unverified。"""
+    win = notice and fplat.IS_WINDOWS
     if getattr(args, "json", False):
+        if win:
+            data = dict(data, windows_unverified=True)
         print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
     else:
-        print(text)
+        print((WINDOWS_NOTICE + "\n" + text) if win else text)
 
 
-def _checks_out(args, checks, title=None):
+def _checks_out(args, checks, title=None, notice=False):
     ok = all(c.ok for c in checks)
     text = wizard.render_checks(checks)
     if title:
         text = title + "\n" + text
-    _emit(args, {"ok": ok, "checks": [asdict(c) for c in checks]}, text)
+    _emit(args, {"ok": ok, "checks": [asdict(c) for c in checks]}, text, notice)
     return 0 if ok else 1
 
 
-def _fail(args, detail, fix=""):
-    return _checks_out(args, [wizard.Check("前置条件", False, detail, fix)])
+def _fail(args, detail, fix="", notice=False):
+    return _checks_out(args, [wizard.Check("前置条件", False, detail, fix)], notice=notice)
 
 
 def _fmt_ts(ts):
@@ -295,14 +303,14 @@ def cmd_setup(args):
 def cmd_doctor(args):
     cfg = _cfg_or_none()
     if cfg is None:
-        return _fail(args, "还没有应用凭证", "先运行 setup --credentials")
+        return _fail(args, "还没有应用凭证", "先运行 setup --credentials", notice=True)
     checks = wizard.doctor(_make_client(cfg))
     sc = _schedule_check()
     if sc is not None:
         checks.append(sc)
     ok = all(c.ok for c in checks)
     _save_state(DOCTOR_STATE, {"at": int(time.time()), "ok": ok})
-    return _checks_out(args, checks, "[4/7] 权限体检")
+    return _checks_out(args, checks, "[4/7] 权限体检", notice=True)
 
 
 def cmd_scan(args):
@@ -423,7 +431,7 @@ def cmd_status(args):
         lines.append("最近备份日志：%s" % d["reports"]["log"])
     if d["reports"]["perms"]:
         lines.append("最近权限缺口报告：%s" % d["reports"]["perms"])
-    _emit(args, d, "\n".join(lines))
+    _emit(args, d, "\n".join(lines), notice=True)
     return 0
 
 

@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -260,16 +261,112 @@ class CredentialsTest(unittest.TestCase):
 
 
 class EnvTest(unittest.TestCase):
+    OK_TLS = staticmethod(lambda host: None)
+
     def test_ok(self):
-        checks = wizard.check_env(connect=lambda addr, timeout: mock.MagicMock())
+        checks = wizard.check_env(connect=lambda addr, timeout: mock.MagicMock(), tls_handshake=self.OK_TLS)
         self.assertTrue(all(c.ok for c in checks))
+        self.assertIn("证书", [c.name for c in checks])
 
     def test_offline(self):
         def boom(addr, timeout):
             raise OSError("unreachable")
-        net = wizard.check_env(connect=boom)[1]
+        net = wizard.check_env(connect=boom, tls_handshake=self.OK_TLS)[1]
         self.assertFalse(net.ok)
         self.assertEqual(net.detail, "连不上飞书")
+
+    def _bad_cert(self, host):
+        raise ssl.SSLCertVerificationError("bad cert")
+
+    def test_cert_error_mac_fix(self):
+        c = wizard.check_env(connect=lambda a, timeout: mock.MagicMock(), tls_handshake=self._bad_cert,
+                             is_windows=False)[-1]
+        self.assertFalse(c.ok)
+        self.assertEqual(c.name, "证书")
+        self.assertIn("Install Certificates.command", c.fix)
+
+    def test_cert_error_windows_fix(self):
+        c = wizard.check_env(connect=lambda a, timeout: mock.MagicMock(), tls_handshake=self._bad_cert,
+                             is_windows=True)[-1]
+        self.assertFalse(c.ok)
+        self.assertIn("更新 Python 或检查公司代理证书", c.fix)
+        self.assertNotIn("Install Certificates", c.fix)
+
+    def test_other_tls_error_keeps_net_mapping(self):
+        def reset(host):
+            raise ssl.SSLError("handshake failure")
+        c = wizard.check_env(connect=lambda a, timeout: mock.MagicMock(), tls_handshake=reset)[-1]
+        self.assertFalse(c.ok)
+        self.assertEqual(c.detail, "连不上飞书")
+
+    def test_default_tls_uses_injected_context_and_hostname(self):
+        calls = {}
+        ctx = mock.MagicMock()
+        ctx.wrap_socket.side_effect = lambda sock, server_hostname: calls.update(host=server_hostname) or sock
+        raw = mock.MagicMock()
+        wizard._tls_handshake("open.feishu.cn",
+                              connect=lambda addr, timeout: calls.update(addr=addr, timeout=timeout) or raw,
+                              context_factory=lambda: ctx)
+        self.assertEqual(calls["addr"], ("open.feishu.cn", 443))
+        self.assertEqual(calls["timeout"], 10)
+        self.assertEqual(calls["host"], "open.feishu.cn")
+
+    def test_default_tls_cert_error_propagates(self):
+        ctx = mock.MagicMock()
+        ctx.wrap_socket.side_effect = ssl.SSLCertVerificationError("x")
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            wizard._tls_handshake("open.feishu.cn", connect=lambda a, timeout: mock.MagicMock(),
+                                  context_factory=lambda: ctx)
+
+
+class CloudAndPathWarnTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        self.od = self.base / "OneDrive"
+        (self.od / "备份").mkdir(parents=True)
+        (self.base / "local").mkdir()
+
+    def run_root(self, p, env, win=True):
+        return wizard.check_root(p, 0, home=self.base / "h", is_windows=win, env=env)
+
+    def names(self, checks):
+        return {c.name: c for c in checks}
+
+    def test_onedrive_warns_on_windows(self):
+        c = self.names(self.run_root(self.od / "备份", {"OneDrive": str(self.od)}))["OneDrive 同步"]
+        self.assertTrue(c.ok and c.warn)
+
+    def test_onedrive_commercial_and_case_insensitive(self):
+        env = {"OneDriveCommercial": str(self.od).upper()}
+        self.assertIn("OneDrive 同步", self.names(self.run_root(self.od / "备份", env)))
+
+    def test_onedrive_consumer_var(self):
+        self.assertIn("OneDrive 同步", self.names(self.run_root(self.od / "备份", {"OneDriveConsumer": str(self.od)})))
+
+    def test_not_under_onedrive_no_warning(self):
+        self.assertNotIn("OneDrive 同步", self.names(self.run_root(self.base / "local", {"OneDrive": str(self.od)})))
+
+    def test_sibling_prefix_is_not_under_onedrive(self):
+        sib = self.base / "OneDrive2"
+        sib.mkdir()
+        self.assertNotIn("OneDrive 同步", self.names(self.run_root(sib, {"OneDrive": str(self.od)})))
+
+    def test_onedrive_ignored_off_windows(self):
+        self.assertNotIn("OneDrive 同步", self.names(self.run_root(self.od / "备份", {"OneDrive": str(self.od)}, win=False)))
+
+    def test_long_path_warns_only_on_windows(self):
+        deep = self.base / ("很长的目录名" * 10) / ("b" * 20)
+        deep.mkdir(parents=True)
+        self.assertGreater(len(str(deep)), 100)
+        w = self.names(self.run_root(deep, {}))["路径长度"]
+        self.assertTrue(w.ok and w.warn)
+        self.assertIn("D:\\飞书备份", w.fix)
+        self.assertNotIn("路径长度", self.names(self.run_root(deep, {}, win=False)))
+
+    def test_short_path_no_length_warning(self):
+        self.assertNotIn("路径长度", self.names(self.run_root(self.base / "local", {})))
 
 
 class PromptSecretTest(unittest.TestCase):
@@ -451,6 +548,44 @@ class CliScheduleVerifyTest(CliBase):
             code, out = self.cli("doctor", "--json")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["checks"], [])
+
+
+class CliWindowsNoticeTest(CliBase):
+    NOTICE = "⚠ Windows 版未经真机验证，遇到问题请对照 WINDOWS_CHECKLIST.md"
+
+    def _doctor(self, win, *extra):
+        config.save_config(config.Config("cli_fake", "sec_fake"))
+        with mock.patch.object(cli, "_make_client"), mock.patch.object(wizard, "doctor", return_value=[]), \
+                mock.patch("fbk.platform.IS_WINDOWS", win):
+            return self.cli("doctor", *extra)
+
+    def test_doctor_first_line_on_windows(self):
+        code, out = self._doctor(True)
+        self.assertEqual(out.splitlines()[0], self.NOTICE)
+
+    def test_doctor_no_notice_on_mac(self):
+        code, out = self._doctor(False)
+        self.assertNotIn("Windows 版未经真机验证", out)
+
+    def test_doctor_json_flag(self):
+        code, out = self._doctor(True, "--json")
+        self.assertIs(json.loads(out)["windows_unverified"], True)
+        code, out = self._doctor(False, "--json")
+        self.assertNotIn("windows_unverified", json.loads(out))
+
+    def test_status_text_and_json(self):
+        with mock.patch("fbk.platform.IS_WINDOWS", True):
+            code, out = self.cli("status")
+            self.assertEqual(out.splitlines()[0], self.NOTICE)
+            code, out = self.cli("status", "--json")
+            self.assertIs(json.loads(out)["windows_unverified"], True)
+        code, out = self.cli("status", "--json")
+        self.assertNotIn("windows_unverified", json.loads(out))
+
+    def test_doctor_without_credentials_still_marked(self):
+        with mock.patch("fbk.platform.IS_WINDOWS", True):
+            code, out = self.cli("doctor")
+        self.assertEqual(out.splitlines()[0], self.NOTICE)
 
 
 class CliSetupTest(CliBase):

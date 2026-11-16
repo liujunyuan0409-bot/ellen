@@ -9,6 +9,7 @@ import random
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -21,6 +22,7 @@ from typing import Callable, List, Optional, Tuple
 from . import auth, walker
 from .client import ApiError
 from .names import EXPORT_EXT
+from . import platform as _plat
 from .platform import prompt as prompt_mod
 
 FEISHU_HOST = "open.feishu.cn"
@@ -72,7 +74,30 @@ def gb(n) -> str:
 
 # ---------------- [1/7] 环境 ----------------
 
-def check_env(connect: Callable = socket.create_connection) -> List[Check]:
+CERT_FIX_MAC = "运行 /Applications/Python 3.x/Install Certificates.command（x 换成你装的版本号），然后重试"
+CERT_FIX_WIN = "更新 Python 或检查公司代理证书"
+
+
+def _tls_handshake(host: str, connect: Callable = socket.create_connection,
+                   context_factory: Callable = ssl.create_default_context) -> None:
+    """对 host:443 做一次 TLS 握手；失败直接抛异常。connect / context_factory 可注入以便离线测试。"""
+    ctx = context_factory()
+    raw = connect((host, 443), timeout=10)
+    try:
+        tls = ctx.wrap_socket(raw, server_hostname=host)
+        try:
+            tls.close()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        try:
+            raw.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def check_env(connect: Callable = socket.create_connection, tls_handshake: Optional[Callable] = None,
+              is_windows: Optional[bool] = None) -> List[Check]:
     v = sys.version_info
     py = Check("Python 版本", tuple(v[:2]) >= MIN_PY, "当前 %d.%d.%d" % (v[0], v[1], v[2]),
                "" if tuple(v[:2]) >= MIN_PY else "需要 Python 3.9 或更高：在终端运行 brew install python3 后重试")
@@ -84,8 +109,17 @@ def check_env(connect: Callable = socket.create_connection) -> List[Check]:
             pass
         net = Check("网络", True, "能连上 %s" % FEISHU_HOST)
     except OSError:
-        net = Check("网络", False, NET_DETAIL, NET_FIX)
-    return [py, net]
+        return [py, Check("网络", False, NET_DETAIL, NET_FIX)]
+    win = _plat.IS_WINDOWS if is_windows is None else is_windows
+    try:
+        (tls_handshake or _tls_handshake)(FEISHU_HOST)
+        cert = Check("证书", True, "能和 %s 建立加密连接" % FEISHU_HOST)
+    except ssl.SSLCertVerificationError:
+        cert = Check("证书", False, "证书校验失败，Python 不信任飞书的证书",
+                     CERT_FIX_WIN if win else CERT_FIX_MAC)
+    except OSError:
+        cert = Check("网络", False, NET_DETAIL, NET_FIX)
+    return [py, net, cert]
 
 
 # ---------------- [2/7] 凭证 ----------------
@@ -275,7 +309,30 @@ def _icloud_check(path: Path, home: Path) -> Optional[Check]:
     return None
 
 
-def check_root(path: Path, need_bytes: int, home: Optional[Path] = None) -> List[Check]:
+LONG_PATH_LIMIT = 100
+
+
+def _onedrive_check(path: Path, env) -> Optional[Check]:
+    def key(p):
+        return str(p).replace("\\", "/").rstrip("/").lower()
+    me = key(path)
+    for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        val = env.get(var)
+        if not val:
+            continue
+        try:
+            base = key(Path(val).resolve())
+        except OSError:
+            base = key(val)
+        if me == base or me.startswith(base + "/"):
+            return Check("OneDrive 同步", True,
+                         "这个目录在 OneDrive 里：备份文件会被上传到 OneDrive、本地可能被清空占位",
+                         "建议换到 D:\\飞书备份 这样的本地目录", warn=True)
+    return None
+
+
+def check_root(path: Path, need_bytes: int, home: Optional[Path] = None,
+               is_windows: Optional[bool] = None, env=None) -> List[Check]:
     """检查备份目录；绝不创建目录。need_bytes 为首次备份预计体积（未知时传 0）。"""
     home = Path(home) if home is not None else Path.home()
     path = Path(os.path.expanduser(str(path)))
@@ -305,9 +362,18 @@ def check_root(path: Path, need_bytes: int, home: Optional[Path] = None) -> List
     else:
         checks.append(Check("剩余空间", True, "剩余 %s（还没做首次扫描，扫描后会再核对）" % gb(free)))
 
-    ic = _icloud_check(path, home.resolve() if home.exists() else home)
-    if ic:
-        checks.append(ic)
+    win = _plat.IS_WINDOWS if is_windows is None else is_windows
+    if win:
+        od = _onedrive_check(path, os.environ if env is None else env)
+        if od:
+            checks.append(od)
+        if len(str(path)) > LONG_PATH_LIMIT:
+            checks.append(Check("路径长度", True, "目录路径有 %d 个字符，太长，备份时容易遇到路径过长的问题" % len(str(path)),
+                                "建议放在浅层目录，例如 D:\\飞书备份", warn=True))
+    else:
+        ic = _icloud_check(path, home.resolve() if home.exists() else home)
+        if ic:
+            checks.append(ic)
     return checks
 
 
