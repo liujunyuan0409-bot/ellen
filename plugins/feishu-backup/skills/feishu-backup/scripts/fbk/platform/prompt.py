@@ -1,6 +1,5 @@
 """密码/ID 弹窗：macOS osascript；Windows 先 tkinter，没有就回退 PowerShell Read-Host。
 输入内容永远不进命令行参数，也不写日志。"""
-import base64
 import logging
 import os
 import subprocess
@@ -8,6 +7,7 @@ import sys
 from pathlib import Path
 
 from . import IS_WINDOWS
+from .ps import encode_command
 
 log = logging.getLogger(__name__)
 
@@ -25,10 +25,6 @@ def _launch_path() -> str:
 def _default_tk():
     import tkinter
     return tkinter
-
-
-def _encoded(script: str) -> str:
-    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
 
 def _clean(value) -> str:
@@ -95,6 +91,7 @@ def _ask_tk(prompt, hidden, tk_factory):
         top.focus_force()
         entry.focus_set()
         try:
+            top.wait_visibility()
             top.grab_set()
         except Exception:  # noqa: BLE001 —— 抢不到焦点不影响使用
             pass
@@ -136,8 +133,8 @@ def _ask_powershell(prompt, hidden, runner, isatty):
     env = dict(os.environ)
     env["FBK_PROMPT"] = prompt  # 提示语走环境变量；Read-Host 需要控制台，所以不加 CREATE_NO_WINDOW
     try:
-        r = runner(["powershell", "-NoProfile", "-EncodedCommand", _encoded(_ps_script(hidden))],
-                   capture_output=True, text=True, timeout=DIALOG_TIMEOUT + 30, env=env)
+        r = runner(["powershell", "-NoProfile", "-EncodedCommand", encode_command(_ps_script(hidden))],
+                   stdout=subprocess.PIPE, text=True, timeout=DIALOG_TIMEOUT + 30, env=env)  # stderr 不捕获：提示语要让用户看见
     except subprocess.TimeoutExpired:
         raise PromptCancelled("已取消：5 分钟内没有填写，凭证未保存")
     except OSError:

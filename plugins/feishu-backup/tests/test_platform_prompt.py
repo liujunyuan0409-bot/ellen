@@ -35,6 +35,8 @@ class FakeWidget:
     def protocol(self, name, fn):
         self.binds[name] = fn
 
+    def wait_visibility(self): self.tk.waited = True
+
     def lift(self): pass
     def focus_force(self): self.tk.focused = True
     def focus_set(self): pass
@@ -62,7 +64,7 @@ class FakeTk:
     def __init__(self, script, text=""):
         self.script, self.text = script, text
         self.widgets, self.after_calls = [], []
-        self.focused = self.grabbed = self.quit_called = False
+        self.focused = self.grabbed = self.quit_called = self.waited = False
 
     def Tk(self):
         return FakeWidget(self, "root")
@@ -120,7 +122,7 @@ class WindowsTkTest(unittest.TestCase):
         self.assertEqual(fk.find("entry")[0].kw["show"], "*")
         top = fk.find("top")[0]
         self.assertTrue(top.attrs["-topmost"])
-        self.assertTrue(fk.grabbed and fk.focused)
+        self.assertTrue(fk.grabbed and fk.focused and fk.waited)
         self.assertEqual(fk.after_calls[0][0], 300000)
         self.assertTrue(all(w.destroyed for w in fk.widgets if w.kind in ("root", "top")))
         self.assertTrue(fk.find("root")[0].withdrawn)
@@ -189,6 +191,9 @@ class WindowsPowerShellFallbackTest(unittest.TestCase):
         self.assertNotIn("请输入 Secret", " ".join(cmd))
         self.assertEqual(kw["env"]["FBK_PROMPT"], "请输入 Secret")
         self.assertNotIn("creationflags", kw)
+        self.assertNotIn("capture_output", kw)
+        self.assertEqual(kw["stdout"], subprocess.PIPE)
+        self.assertNotIn("stderr", kw)
         self.assertGreater(kw["timeout"], 300)
 
     def test_tk_failure_other_than_import_also_falls_back(self):

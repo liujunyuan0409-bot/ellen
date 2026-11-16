@@ -1,10 +1,10 @@
 """系统通知：macOS 用 osascript，Windows 用 PowerShell toast。尽力而为：任何失败返回 False，不抛异常。"""
-import base64
 import logging
 import os
 import subprocess
 
 from . import IS_WINDOWS
+from .ps import encode_command
 
 log = logging.getLogger(__name__)
 
@@ -29,11 +29,6 @@ $toast = New-Object Windows.UI.Notifications.ToastNotification $xml
 """ % POWERSHELL_AUMID
 
 
-def encoded_script(script: str) -> str:
-    """PowerShell -EncodedCommand 要 UTF-16LE 的 base64，免去命令行引号转义。"""
-    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-
-
 def _text(b) -> str:
     if isinstance(b, bytes):
         return b.decode("utf-8", "replace").strip()
@@ -52,7 +47,7 @@ def send(title: str, message: str, runner=subprocess.run, is_windows: bool = IS_
             env = dict(os.environ)
             env["FBK_TITLE"] = str(title)
             env["FBK_MSG"] = str(message)
-            r = runner(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script(TOAST_SCRIPT)],
+            r = runner(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encode_command(TOAST_SCRIPT)],
                        capture_output=True, timeout=TIMEOUT, env=env, creationflags=CREATE_NO_WINDOW)
         else:
             script = "display notification %s with title %s" % (_quote(message), _quote(title))
