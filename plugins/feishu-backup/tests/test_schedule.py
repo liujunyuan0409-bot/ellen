@@ -62,6 +62,40 @@ class SlotTest(unittest.TestCase):
         self.assertEqual([weekday_name(i) for i in (1, 5, 7)], ["周一", "周五", "周日"])
 
 
+@unittest.skipUnless(hasattr(__import__("time"), "tzset"), "需要 time.tzset 切换本机时区")
+class FixedOffsetTzTest(unittest.TestCase):
+    """终审 TZ：本机时区不是 +8（固定 UTC-5，无夏令时）时，计划时间按本机墙上时间算。"""
+
+    def setUp(self):
+        import time as _time
+        old = os.environ.get("TZ")
+
+        def restore():
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            _time.tzset()
+        self.addCleanup(restore)
+        os.environ["TZ"] = "UTC+5"  # POSIX 写法：本地 = UTC − 5 小时
+        _time.tzset()
+
+    def test_slots_in_local_minus_5(self):
+        from datetime import timezone
+        utc = timezone.utc
+        mon_1300_local = datetime(2026, 11, 16, 18, 0, tzinfo=utc)  # 周一 13:00（UTC-5）
+        self.assertEqual(last_slot(mon_1300_local, 1, 12, 0), datetime(2026, 11, 16, 17, 0, tzinfo=utc))
+        mon_1130_local = datetime(2026, 11, 16, 16, 30, tzinfo=utc)  # 周一 11:30（UTC-5），还没到 12:00
+        self.assertEqual(last_slot(mon_1130_local, 1, 12, 0), datetime(2026, 11, 9, 17, 0, tzinfo=utc))
+        self.assertEqual(next_slot(mon_1130_local, 1, 12, 0), datetime(2026, 11, 16, 17, 0, tzinfo=utc))
+        self.assertEqual(last_slot(mon_1300_local, 1, 12, 0).utcoffset(), timedelta(hours=-5))
+        # 北京时间已经是周二凌晨，但本机还是周一：按本机算
+        tue_0100_bj = datetime(2026, 11, 16, 17, 30, tzinfo=utc)
+        self.assertTrue(is_due(int(mon_1130_local.timestamp()), int(tue_0100_bj.timestamp()), 1, 12, 0))
+        self.assertFalse(is_due(int(datetime(2026, 11, 16, 17, 5, tzinfo=utc).timestamp()),
+                                int(tue_0100_bj.timestamp()), 1, 12, 0))
+
+
 class IsDueTest(unittest.TestCase):
     def test_never_succeeded_is_due(self):
         self.assertTrue(is_due(None, _ts(2026, 11, 18, 9), 1, 12, 0))
