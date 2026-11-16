@@ -1,7 +1,7 @@
 {
   "name": "feishu-backup",
-  "version": "0.1.0",
-  "description": "飞书文件定期备份到本地 Mac，旧版按日期归档，输出权限缺口报告",
+  "version": "0.2.0",
+  "description": "飞书文件每周备份到本机（macOS / Windows，Windows 版未经真机验证），旧版按日期归档，输出权限缺口报告",
   "author": {
     "name": "Ellen Liu",
     "email": "ellen.liu@klook.com"

@@ -20,7 +20,7 @@
 
 | 插件 | 用途 |
 |------|------|
-| [feishu-backup](plugins/feishu-backup) | 飞书文件定期备份到本地 Mac，旧版按日期归档，附权限缺口报告 |
+| [feishu-backup](plugins/feishu-backup) | 飞书文件每周备份到本机（macOS / Windows，Windows 版未经真机验证），旧版按日期归档，附权限缺口报告 |
 
 ## 安装
 
@@ -31,8 +31,11 @@
 /plugin install feishu-backup@ellen
 ```
 
+不用 Claude Code 也行：把本仓库链接发给你的 AI 助手（Codex CLI、Cursor、Gemini CLI 等），它会读根目录的 [AGENTS.md](AGENTS.md) 找到对应插件的说明。飞书备份的安装与使用说明在 [plugins/feishu-backup/AGENTS.md](plugins/feishu-backup/AGENTS.md)。
+
 ## 新增插件
 
 1. 新建 `plugins/<插件名>/`，放 `.claude-plugin/plugin.json`、`README.md`、`skills/<skill名>/SKILL.md`
 2. 在 `.claude-plugin/marketplace.json` 的 `plugins` 里登记，写上 `category`
 3. 在本 README 对应分类下加一行；没有合适的分类就新建一个
+4. 插件要给非 Claude 的 AI 助手用时，在根目录 [AGENTS.md](AGENTS.md) 的表里登记说明位置
