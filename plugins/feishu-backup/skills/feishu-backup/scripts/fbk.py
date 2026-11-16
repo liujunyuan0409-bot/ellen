@@ -250,22 +250,28 @@ def cmd_schedule_install(args, title="[7/7] 定时任务"):
             schedule.parse_time(tm)
     except ValueError as e:
         return _fail(args, str(e), "例如：setup --schedule --weekday 1 --time 12:00")
-    if wd is not None or tm is not None:
-        if wd is not None:
-            cfg.schedule_weekday = wd
-        if tm is not None:
-            cfg.schedule_time = "%02d:%02d" % schedule.parse_time(tm)
-        config.save_config(cfg)
+    changing = wd is not None or tm is not None
+    unchanged = "（计划时间没有改动，仍是%s）" % _slot_text(cfg) if changing else ""
+    # 先试连、再装，都成功了才把新的计划时间写进配置：失败时一切保持原样
     python = schedule.pick_python()
     problem = schedule.tls_probe(python)
     if problem is not None:
-        return _checks_out(args, [_tls_problem_check(problem, python)], title)
+        c = _tls_problem_check(problem, python)
+        c.detail += unchanged
+        return _checks_out(args, [c], title)
     try:
         path = schedule.install(python=python)
     except Exception as e:  # noqa: BLE001
-        return _checks_out(args, [wizard.Check("定时任务", False, "安装失败：%s" % e, "把这一行发给你的 AI 助手排查")], title)
-    if cfg.schedule_installed_at is None:
+        return _checks_out(args, [wizard.Check("定时任务", False, "安装失败：%s%s" % (e, unchanged),
+                                               "把这一行发给你的 AI 助手排查")], title)
+    if wd is not None:
+        cfg.schedule_weekday = wd
+    if tm is not None:
+        cfg.schedule_time = "%02d:%02d" % schedule.parse_time(tm)
+    first = cfg.schedule_installed_at is None
+    if first:
         cfg.schedule_installed_at = int(time.time())
+    if changing or first:
         config.save_config(cfg)
     detail = "已安装（%s）。计划：%s（错过会在开机后补跑），本机时区。下次计划：%s" % (
         path, _slot_text(cfg), _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M"))

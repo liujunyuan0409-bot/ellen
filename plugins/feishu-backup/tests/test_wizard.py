@@ -804,6 +804,27 @@ class CliRunTest(CliBase):
         self.tls_probe.assert_called_once_with("/usr/bin/python3")
         self.assertIsNone(config.load_config().schedule_installed_at)
 
+    def test_setup_schedule_probe_failure_keeps_old_plan(self):
+        # 再审 4：试连失败时新的 --weekday / --time 不能先存进配置
+        self._cfg()
+        self.tls_probe.return_value = "cert"
+        with mock.patch.object(schedule, "install") as inst:
+            code, out = self.cli("setup", "--schedule", "--weekday", "5", "--time", "20:00")
+        self.assertEqual(code, 1)
+        inst.assert_not_called()
+        got = config.load_config()
+        self.assertEqual((got.schedule_weekday, got.schedule_time), (1, "12:00"))
+        self.assertIn("计划时间没有改动", out)
+
+    def test_setup_schedule_install_failure_keeps_old_plan(self):
+        self._cfg()
+        with mock.patch.object(schedule, "install", side_effect=RuntimeError("launchctl bootstrap 失败")):
+            code, out = self.cli("setup", "--schedule", "--weekday", "5", "--time", "20:00")
+        self.assertEqual(code, 1)
+        got = config.load_config()
+        self.assertEqual((got.schedule_weekday, got.schedule_time), (1, "12:00"))
+        self.assertIn("计划时间没有改动", out)
+
     def test_setup_schedule_network_failure_does_not_install(self):
         self._cfg()
         self.tls_probe.return_value = "network"
