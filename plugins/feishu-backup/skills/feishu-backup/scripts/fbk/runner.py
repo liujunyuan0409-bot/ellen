@@ -355,6 +355,41 @@ def _waiting_retry(row, now) -> bool:
     return int(now) - int(row["finished"]) < schedule.RETRY_AFTER_INCOMPLETE
 
 
+KEEP_LOGIN_AFTER = 86400  # 秒：登录信息超过一天没续期，定时检查时顺手续期一次
+
+
+def _keep_login_alive(cfg, root, transport, sleep=time.sleep) -> None:
+    """没到备份时间、直接退出前顺手续期登录（只是一次登录续期请求，不碰任何文件）。
+
+    飞书的续期凭据只管 7 天，而每周才真正备份一次：不续期的话，下周那次只要晚开机一点就得重新登录。
+    另一个进程正在备份时跳过（它自己会续期；两边同时续期会让旧凭据作废）。
+    没网静默跳过；续期被飞书拒绝就提醒重新登录（每天最多一次）。"""
+    try:
+        tok = config.load_token()
+    except (OSError, ValueError):
+        return
+    if not isinstance(tok, dict) or not tok.get("refresh_token"):
+        return
+    if time.time() - int(tok.get("obtained_at") or 0) < KEEP_LOGIN_AFTER:
+        return
+    try:
+        lock = schedule.RunLock(root).acquire()
+    except (schedule.AlreadyRunning, OSError):
+        return
+    try:
+        auth.TokenManager(cfg, transport=transport, sleep=sleep)._refresh(tok)
+        log.info("已续期登录")
+    except auth.NetworkError as e:
+        log.info("续期登录时网络不通，下次再试：%s", e)
+    except auth.LoginRequired as e:
+        log.error("续期登录失败：%s", e)
+        notify.notify(TITLE, MSG_LOGIN, key="login_required")
+    except Exception:  # noqa: BLE001
+        log.exception("续期登录出错")
+    finally:
+        lock.release()
+
+
 def _on_term(signum, frame):
     raise SystemExit(128 + signum)
 
@@ -426,10 +461,12 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
             _check_stale(last, cfg, now)
             if _waiting_retry(store.last_run(), now):
                 log.info("上次没读全，6 小时内不重试，跳过")
+                _keep_login_alive(cfg, root, transport, sleep)
                 return 0
             hh, mm = schedule.parse_time(cfg.schedule_time)
             if not schedule.is_due(last, now, cfg.schedule_weekday, hh, mm):
                 log.info("本周期已经成功备份过，跳过")
+                _keep_login_alive(cfg, root, transport, sleep)
                 return 0
         try:
             lock = schedule.RunLock(root).acquire()

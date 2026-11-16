@@ -208,6 +208,59 @@ class GateTest(Base):
         self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
         self.assertEqual(self.t.calls, [])
 
+    # 真机冒烟（v0.2.0）：飞书的续期凭据只管 7 天，而每周才真正备份一次 → 不顺手续期就几乎每周都要重新登录
+    TOKEN_PATH = "/authen/v2/oauth/token"
+
+    def _old_token(self, age):
+        config.save_token({"access_token": "u-old", "refresh_token": "r-old", "expires_in": 7200,
+                           "refresh_token_expires_in": 604800, "obtained_at": int(time.time()) - age})
+
+    def _succeeded_this_week(self):
+        s = self.store()
+        s.finish_run(s.start_run(), True, {})
+
+    def test_not_due_renews_login_older_than_a_day(self):
+        self._succeeded_this_week()
+        self._old_token(2 * 86400)
+        self.t.queue("POST", self.TOKEN_PATH, body={"code": 0, "access_token": "u-new", "refresh_token": "r-new",
+                                                    "expires_in": 7200, "refresh_token_expires_in": 604800})
+        self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
+        self.assertEqual([c["path"] for c in self.t.calls], [self.TOKEN_PATH])  # 只续期，不备份
+        tok = config.load_token()
+        self.assertEqual(tok["refresh_token"], "r-new")
+        self.assertGreater(tok["obtained_at"], int(time.time()) - 60)
+        self.notify.assert_not_called()
+
+    def test_not_due_fresh_login_not_renewed(self):
+        self._succeeded_this_week()
+        self._old_token(3600)
+        self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
+        self.assertEqual(self.t.calls, [])
+
+    def test_renew_offline_is_quiet(self):
+        self._succeeded_this_week()
+        self._old_token(2 * 86400)
+        self.t.queue("POST", self.TOKEN_PATH, body=urllib.error.URLError("no route"))
+        self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
+        self.assertEqual(config.load_token()["refresh_token"], "r-old")
+        self.notify.assert_not_called()
+
+    def test_renew_rejected_notifies_login(self):
+        self._succeeded_this_week()
+        self._old_token(8 * 86400)
+        self.t.queue("POST", self.TOKEN_PATH, body={"code": 20037, "error": "invalid_grant"})
+        self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
+        self.assertEqual(self.notified_keys(), ["login_required"])
+
+    def test_renew_skipped_while_another_run_holds_lock(self):
+        from fbk import schedule
+        self._succeeded_this_week()
+        self._old_token(2 * 86400)
+        held = schedule.RunLock(self.root).acquire()  # 正在备份的进程自己会续期；两边同时续期会让旧凭据作废
+        self.addCleanup(held.release)
+        self.assertEqual(self.run_it(force=False, now=int(time.time())), 0)
+        self.assertEqual(self.t.calls, [])
+
     def test_already_running_quiet(self):
         from fbk import schedule
         held = schedule.RunLock(self.root).acquire()  # 另一个打开的文件描述上持有 flock
