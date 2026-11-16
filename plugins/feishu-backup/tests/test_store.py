@@ -24,7 +24,8 @@ class StoreTest(unittest.TestCase):
     def test_schema_and_version(self):
         names = {r[0] for r in self.s._conn.execute("select name from sqlite_master where type='table'")}
         self.assertTrue({"items", "blobs", "chat_cursor", "attachments", "links", "runs"} <= names)
-        self.assertEqual(self.s._conn.execute("pragma user_version").fetchone()[0], 2)
+        self.assertEqual(self.s._conn.execute("pragma user_version").fetchone()[0], 3)
+        self.assertIn("meta", names)
 
     def test_paths_stored_relative_and_resolved_against_current_root(self):
         # 终审 C1：清单里存相对备份根目录的路径，读出来按当前根目录拼回绝对路径
@@ -47,7 +48,7 @@ class StoreTest(unittest.TestCase):
         old = "/Volumes/旧盘/飞书备份"
         c = sqlite3.connect(str(self.db))
         c.execute("insert into items (token, status, local_path) values ('t1', 'ok', ?)",
-                  (old + "/我的空间/x/我的空间.pdf",))
+                  (old + "/我的空间/x/周报.pdf",))
         c.execute("insert into items (token, status, local_path) values ('t2', 'ok', ?)",
                   (str(self.root / "知识库" / "库" / "y.pdf"),))
         c.execute("insert into items (token, status, local_path) values ('t3', 'ok', '/elsewhere/z.pdf')")
@@ -60,11 +61,58 @@ class StoreTest(unittest.TestCase):
         self.s = Store(self.db)
         raw = lambda q: [r[0] for r in self.s._conn.execute(q)]  # noqa: E731
         self.assertEqual(raw("select local_path from items order by token"),
-                         ["我的空间/x/我的空间.pdf", "知识库/库/y.pdf", "/elsewhere/z.pdf"])
+                         ["我的空间/x/周报.pdf", "知识库/库/y.pdf", "/elsewhere/z.pdf"])
         self.assertEqual(raw("select local_path from blobs"), ["共享给我/群/b.zip"])
         self.assertEqual(raw("select local_path from attachments"), ["群聊附件/群/2025-01-01_a.txt"])
-        self.assertEqual(self.s.get_item("t1")["local_path"], str(self.root / "我的空间" / "x" / "我的空间.pdf"))
+        self.assertEqual(self.s.get_item("t1")["local_path"], str(self.root / "我的空间" / "x" / "周报.pdf"))
         self.assertEqual(self.s.get_item("t3")["local_path"], "/elsewhere/z.pdf")
+
+    def _seed_old(self, rows, meta_root=None):
+        import sqlite3
+        self.s.close()
+        c = sqlite3.connect(str(self.db))
+        if meta_root is None:
+            c.execute("delete from meta")
+        else:
+            c.execute("insert or replace into meta values ('root', ?)", (meta_root,))
+        for tok, path in rows:
+            c.execute("insert into items (token, status, local_path) values (?, 'ok', ?)", (tok, path))
+        c.commit()
+        c.close()
+        self.s = Store(self.db)
+        return lambda t: self.s._conn.execute("select local_path from items where token=?", (t,)).fetchone()[0]
+
+    def test_meta_root_recorded_on_open(self):
+        v = self.s._conn.execute("select value from meta where key='root'").fetchone()[0]
+        self.assertEqual(v, str(self.root.resolve()))
+
+    def test_migration_uses_recorded_old_root_when_it_contains_owned_dir_name(self):
+        # 旧根目录本身含「知识库」：按记录的旧根精确截取
+        old = "/Volumes/知识库备份/飞书"
+        get = self._seed_old([("t1", old + "/我的空间/a/b.pdf")], meta_root=old)
+        self.assertEqual(get("t1"), "我的空间/a/b.pdf")
+
+    def test_migration_without_meta_prefers_cut_that_exists_under_current_root(self):
+        old = "/Volumes/知识库备份/飞书"
+        f = self.root / "我的空间" / "a" / "b.pdf"
+        f.parent.mkdir(parents=True)
+        f.write_text("x")
+        get = self._seed_old([("t1", old + "/我的空间/a/b.pdf")])
+        self.assertEqual(get("t1"), "我的空间/a/b.pdf")
+
+    def test_migration_without_meta_nothing_exists_uses_last_occurrence(self):
+        old = "/Volumes/知识库备份/飞书"
+        get = self._seed_old([("t1", old + "/我的空间/a/b.pdf")])
+        self.assertEqual(get("t1"), "我的空间/a/b.pdf")
+
+    def test_migration_without_meta_nothing_exists_last_cut(self):
+        get = self._seed_old([("t1", "/old/我的空间/x/知识库/y.pdf")])
+        self.assertEqual(get("t1"), "知识库/y.pdf")
+
+    def test_meta_root_updated_after_migration(self):
+        self._seed_old([], meta_root="/somewhere/else")
+        v = self.s._conn.execute("select value from meta where key='root'").fetchone()[0]
+        self.assertEqual(v, str(self.root.resolve()))
 
     def test_long_path_prefix_never_stored(self):
         # 文件操作用的 \\?\ 前缀路径就算误传进来，清单里也只存不带前缀的相对路径

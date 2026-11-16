@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE TABLE IF NOT EXISTS links (
   token TEXT PRIMARY KEY, kind TEXT, status TEXT, hint TEXT, sender TEXT,
   chat_name TEXT, sent_at INTEGER, first_seen INTEGER);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY, started INTEGER, finished INTEGER, ok INTEGER, summary TEXT);
 """
@@ -35,15 +36,28 @@ _LINK_COLS = {"kind", "status", "hint", "sender", "chat_name", "sent_at", "first
 # 备份根目录下程序自己的顶层目录；旧版清单里的绝对路径按它们定位相对部分
 OWNED_TOP_DIRS = ("我的空间", "知识库", "共享给我", "群聊附件")
 _PATH_TABLES = (("items", "token"), ("attachments", "file_key"), ("blobs", "sha256"))
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+
+def _cut_candidates(path: str) -> list:
+    """绝对路径里每个程序自有顶层目录出现的位置，各截一个相对路径（从前到后）。"""
+    parts = PurePosixPath(path).parts
+    return ["/".join(parts[i:]) for i, seg in enumerate(parts) if i > 0 and seg in OWNED_TOP_DIRS]
 
 
 def _strip_old_root(path: str) -> Optional[str]:
     """绝对路径 → 从第一个程序自有顶层目录开始的相对路径；找不到返回 None。"""
-    parts = PurePosixPath(path).parts
-    for i, seg in enumerate(parts):
-        if i > 0 and seg in OWNED_TOP_DIRS:
-            return "/".join(parts[i:])
+    c = _cut_candidates(path)
+    return c[0] if c else None
+
+
+def _strip_recorded_root(path: str, old_root: Optional[str]) -> Optional[str]:
+    """按 meta 里记录的旧根目录精确截取；不在该根目录下返回 None。"""
+    if not old_root:
+        return None
+    base = old_root.rstrip("/")
+    if path.startswith(base + "/") and len(path) > len(base) + 1:
+        return path[len(base) + 1:]
     return None
 
 
@@ -74,19 +88,36 @@ class Store:
             if "url" not in cols:
                 self._conn.execute("ALTER TABLE links ADD COLUMN url TEXT")
             self._migrate_abs_paths()
+            # 迁移跑完才记录当前根目录，这样迁移时看到的是上一次的根目录
+            self._conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('root', ?)",
+                               (str(self.root.resolve()),))
             self._conn.execute("PRAGMA user_version = %d" % SCHEMA_VERSION)
             self._conn.commit()
 
     def _migrate_abs_paths(self):
-        """旧清单里的绝对路径改成相对路径（幂等，每次打开都检查）：先按当前根目录，
-        再按第一个程序自有顶层目录（我的空间/知识库/共享给我/群聊附件）截掉旧根目录。截不出的原样保留。"""
+        """旧清单里的绝对路径改成相对路径（幂等，每次打开都检查）。顺序：
+        1) 在当前根目录下就直接截；2) meta 记录的旧根目录精确前缀截取；
+        3) 没记录时，在每个程序自有顶层目录出现的位置各截一次，选第一个在当前根目录下真实存在的；
+        4) 都不存在时用最后一次出现的位置。截不出的原样保留。"""
+        row = self._conn.execute("SELECT value FROM meta WHERE key='root'").fetchone()
+        old_root = row[0] if row else None
         for table, pk in _PATH_TABLES:
             rows = self._conn.execute(
                 "SELECT %s, local_path FROM %s WHERE local_path LIKE '/%%'" % (pk, table)).fetchall()
             for key, p in rows:
-                rel = self._rel_under_root(p) or _strip_old_root(p)
+                rel = self._rel_under_root(p) or _strip_recorded_root(p, old_root)
+                if rel is None:
+                    cands = _cut_candidates(p)
+                    if cands:
+                        rel = next((c for c in cands if self._exists_rel(c)), cands[-1])
                 if rel is not None:
                     self._conn.execute("UPDATE %s SET local_path=? WHERE %s=?" % (table, pk), (rel, key))
+
+    def _exists_rel(self, rel: str) -> bool:
+        try:
+            return os.path.exists(lp(self.root.joinpath(*PurePosixPath(rel).parts)))
+        except OSError:
+            return False
 
     # ---- 路径：存相对、读绝对 ----
     def _rel_under_root(self, p) -> Optional[str]:
