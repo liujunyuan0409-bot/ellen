@@ -80,10 +80,28 @@ CERT_FIX_MAC = "运行 /Applications/Python 3.x/Install Certificates.command（x
 CERT_FIX_WIN = "更新 Python 或检查公司代理证书"
 
 
+CERT_FIX_MAC_SYSTEM = ("这是 macOS 自带的 Python：先更新 macOS 到最新版（系统设置 → 通用 → 软件更新）；"
+                       "还不行就从 python.org 下载安装 Python")
+CERT_FIX_MAC_BREW = "在「终端」里运行 brew reinstall ca-certificates openssl"
+CERT_FIX_MAC_GENERIC = ("按 Python 的来源修：python.org 装的运行 /Applications/Python 3.x/Install Certificates.command；"
+                        "Homebrew 装的运行 brew reinstall ca-certificates openssl；macOS 自带的请更新 macOS")
+_FRAMEWORK_RE = re.compile(r"/Library/Frameworks/Python\.framework/Versions/(\d+\.\d+)/")
+
+
 def cert_fix(executable: Optional[str] = None, is_windows: Optional[bool] = None) -> str:
-    """证书校验失败的修法（按系统）。executable：出问题的那个 Python。"""
+    """证书校验失败的修法。mac 上按出问题的那个 Python（executable，默认当前解释器）的安装方式给。"""
     win = _plat.IS_WINDOWS if is_windows is None else is_windows
-    return CERT_FIX_WIN if win else CERT_FIX_MAC
+    if win:
+        return CERT_FIX_WIN
+    exe = executable or sys.executable or ""
+    if "/Library/Developer/CommandLineTools/" in exe or exe == "/usr/bin/python3" or exe.startswith("/usr/bin/"):
+        return CERT_FIX_MAC_SYSTEM
+    if exe.startswith("/Library/Frameworks/Python.framework/"):
+        m = _FRAMEWORK_RE.search(exe)
+        return CERT_FIX_MAC.replace("3.x", m.group(1)).replace("（x 换成你装的版本号）", "") if m else CERT_FIX_MAC
+    if exe.startswith("/opt/homebrew/") or exe.startswith("/usr/local/Cellar/") or exe.startswith("/usr/local/opt/"):
+        return CERT_FIX_MAC_BREW
+    return CERT_FIX_MAC_GENERIC
 
 
 def _tls_handshake(host: str, connect: Callable = socket.create_connection,
@@ -105,7 +123,7 @@ def _tls_handshake(host: str, connect: Callable = socket.create_connection,
 
 
 def check_env(connect: Callable = socket.create_connection, tls_handshake: Optional[Callable] = None,
-              is_windows: Optional[bool] = None) -> List[Check]:
+              is_windows: Optional[bool] = None, executable: Optional[str] = None) -> List[Check]:
     v = sys.version_info
     win = _plat.IS_WINDOWS if is_windows is None else is_windows
     py_ok = tuple(v[:2]) >= MIN_PY
@@ -124,8 +142,7 @@ def check_env(connect: Callable = socket.create_connection, tls_handshake: Optio
         (tls_handshake or _tls_handshake)(FEISHU_HOST)
         cert = Check("证书", True, "能和 %s 建立加密连接" % FEISHU_HOST)
     except ssl.SSLCertVerificationError:
-        cert = Check("证书", False, "证书校验失败，Python 不信任飞书的证书",
-                     CERT_FIX_WIN if win else CERT_FIX_MAC)
+        cert = Check("证书", False, "证书校验失败，Python 不信任飞书的证书", cert_fix(executable, is_windows=win))
     except OSError:
         cert = Check("网络", False, NET_DETAIL, NET_FIX)
     return [py, net, cert]

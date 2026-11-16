@@ -19,6 +19,7 @@
 - 新增 `fbk/platform/`，按系统选实现：配置 / 日志 / 程序副本位置（`%APPDATA%`、`%LOCALAPPDATA%`）、任务计划程序（`schtasks /Create /XML`，登录时 + 每小时，仅在用户登录时运行，用 `pythonw.exe` 不弹黑窗口）、PowerShell 通知、tkinter 置顶输入窗口（不可用时回退 PowerShell `Read-Host`）、`msvcrt` 运行锁、`SetThreadExecutionState` 防睡眠。
 - 所有文件操作在 Windows 上走 `\\?\` 长路径；清单里绝不保存带前缀的路径。
 - 中文 Windows 上输出被 AI 工具接走时改用 UTF-8，打印 ✓ 不再报错。
+- 证书校验失败时的修法按 Python 的来源给：python.org 装的给对应版本的 `Install Certificates.command`，macOS 自带的（`/usr/bin/python3`、命令行工具）让更新 macOS 或改装 python.org 的 Python，Homebrew 装的给 `brew reinstall ca-certificates openssl`，认不出来时三种都列上。
 - 向导新增：证书检查、OneDrive 同步目录提醒、备份目录路径过长提醒；Python 版本过低、目录无权限的修法按系统给出。
 - Windows 上 `doctor` / `status` 第一行标注「Windows 版未经真机验证」，`--json` 带 `windows_unverified: true`。
 

@@ -280,10 +280,30 @@ class EnvTest(unittest.TestCase):
 
     def test_cert_error_mac_fix(self):
         c = wizard.check_env(connect=lambda a, timeout: mock.MagicMock(), tls_handshake=self._bad_cert,
-                             is_windows=False)[-1]
+                             is_windows=False,
+                             executable="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3")[-1]
         self.assertFalse(c.ok)
         self.assertEqual(c.name, "证书")
-        self.assertIn("Install Certificates.command", c.fix)
+        self.assertIn("/Applications/Python 3.12/Install Certificates.command", c.fix)
+
+    # 终审 M7：按 Python 的安装方式给修法
+    def test_cert_fix_by_install_type(self):
+        fx = lambda exe: wizard.cert_fix(exe, is_windows=False)  # noqa: E731
+        self.assertIn("/Applications/Python 3.11/Install Certificates.command",
+                      fx("/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"))
+        for sysexe in ("/usr/bin/python3",
+                       "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3"):
+            f = fx(sysexe)
+            self.assertIn("更新 macOS", f)
+            self.assertIn("python.org", f)
+            self.assertNotIn("Install Certificates.command", f)
+        for brew in ("/opt/homebrew/bin/python3", "/usr/local/Cellar/python@3.12/3.12.1/bin/python3"):
+            self.assertIn("brew reinstall ca-certificates openssl", fx(brew))
+        other = fx("/somewhere/else/python3")
+        self.assertIn("Install Certificates.command", other)
+        self.assertIn("brew reinstall ca-certificates openssl", other)
+        self.assertIn("更新 macOS", other)
+        self.assertEqual(wizard.cert_fix("C:\\Python312\\pythonw.exe", is_windows=True), wizard.CERT_FIX_WIN)
 
     def test_cert_error_windows_fix(self):
         c = wizard.check_env(connect=lambda a, timeout: mock.MagicMock(), tls_handshake=self._bad_cert,
