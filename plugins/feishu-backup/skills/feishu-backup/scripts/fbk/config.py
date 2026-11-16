@@ -40,6 +40,7 @@ class Config:
     lookback_days: int = 180
     schedule_weekday: int = 1  # ISO：1=周一 … 7=周日
     schedule_time: str = "12:00"  # 本机时区
+    schedule_installed_at: Optional[int] = None  # 第一次 setup --schedule 成功的时间（从没成功备份过时，过期提醒以它为起点）
 
 
 def _write_private(name: str, data: dict) -> None:
@@ -64,6 +65,14 @@ def _write_private(name: str, data: dict) -> None:
         raise
 
 
+def _opt_int(v) -> Optional[int]:
+    """可选的整数字段：缺失或写坏了就当没有（只影响提醒的起点，不值得因此判配置损坏）。"""
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def load_config() -> Config:
     path = CONFIG_DIR / "config.json"
     if not path.exists():
@@ -83,6 +92,7 @@ def load_config() -> Config:
             lookback_days=int(d.get("lookback_days", 180)),
             schedule_weekday=int(d.get("schedule_weekday", 1)),
             schedule_time=str(d.get("schedule_time", "12:00")),
+            schedule_installed_at=_opt_int(d.get("schedule_installed_at")),
         )
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise ConfigCorrupt("配置文件损坏：%s（%s）" % (path, e))
@@ -97,6 +107,7 @@ def save_config(cfg: Config) -> None:
         "lookback_days": cfg.lookback_days,
         "schedule_weekday": cfg.schedule_weekday,
         "schedule_time": cfg.schedule_time,
+        "schedule_installed_at": cfg.schedule_installed_at,
     })
 
 

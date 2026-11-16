@@ -172,6 +172,37 @@ def pick_python(runner=subprocess.run, exists=os.path.exists, is_windows: Option
     return exe
 
 
+TLS_PROBE_TIMEOUT = 20  # 秒
+TLS_PROBE_CERT = 3
+TLS_PROBE_NET = 4
+# 用定时任务将要用的 Python 试连一次飞书：0 正常；3 证书校验失败；4 其他连不上（HTTP 错误码也算连上了）。
+TLS_PROBE_SRC = r"""
+import ssl, sys, urllib.error, urllib.request
+try:
+    urllib.request.urlopen("https://open.feishu.cn/", timeout=15).close()
+except urllib.error.HTTPError:
+    pass
+except Exception as e:
+    r = getattr(e, "reason", e)
+    cert = isinstance(r, ssl.SSLCertVerificationError) or (
+        isinstance(r, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(r))
+    sys.exit(%d if cert else %d)
+""" % (TLS_PROBE_CERT, TLS_PROBE_NET)
+
+
+def tls_probe(python: str, runner=subprocess.run) -> Optional[str]:
+    """正常返回 None；否则 "cert"（证书校验失败）、"network"（连不上 / 超时）或 "python"（这个 Python 跑不起来）。"""
+    try:
+        r = runner([python, "-c", TLS_PROBE_SRC], capture_output=True, text=True, timeout=TLS_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "network"
+    except (OSError, subprocess.SubprocessError):
+        return "python"
+    if r.returncode == 0:
+        return None
+    return {TLS_PROBE_CERT: "cert", TLS_PROBE_NET: "network"}.get(r.returncode, "python")
+
+
 def install(python: Optional[str] = None, launcher: Optional[str] = None, *, app_root: Optional[Path] = None,
             agents_dir: Optional[Path] = None, runner=subprocess.run, uid: Optional[int] = None,
             sleep=time.sleep, is_windows: Optional[bool] = None, user: Optional[str] = None):

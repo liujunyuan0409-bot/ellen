@@ -454,6 +454,12 @@ class CliBase(unittest.TestCase):
         p = mock.patch.object(schedule, "IS_WINDOWS", False)  # CLI 测试走 mac 分支，不碰 schtasks
         p.start()
         self.addCleanup(p.stop)
+        p = mock.patch.object(schedule, "tls_probe", return_value=None)  # 不联网
+        self.tls_probe = p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(schedule, "pick_python", return_value="/usr/bin/python3")
+        p.start()
+        self.addCleanup(p.stop)
         self.base = base
 
     def broken_schedule(self):
@@ -746,6 +752,42 @@ class CliRunTest(CliBase):
         self.assertIn("下次计划：每周一 12:00（", out)
         d = json.loads(self.cli("status", "--json")[1])
         self.assertRegex(d["next_run_text"], r"^\d{4}-\d{2}-\d{2} 12:00$")
+
+    def test_setup_schedule_cert_failure_does_not_install(self):
+        self._cfg()
+        self.tls_probe.return_value = "cert"
+        with mock.patch.object(schedule, "install") as inst:
+            code, out = self.cli("setup", "--schedule")
+        self.assertEqual(code, 1)
+        inst.assert_not_called()
+        self.assertIn("✗", out)
+        self.assertIn("证书", out)
+        self.assertIn("/usr/bin/python3", out)
+        self.tls_probe.assert_called_once_with("/usr/bin/python3")
+        self.assertIsNone(config.load_config().schedule_installed_at)
+
+    def test_setup_schedule_network_failure_does_not_install(self):
+        self._cfg()
+        self.tls_probe.return_value = "network"
+        with mock.patch.object(schedule, "install") as inst:
+            code, out = self.cli("setup", "--schedule", "--json")
+        self.assertEqual(code, 1)
+        inst.assert_not_called()
+
+    def test_setup_schedule_uses_probed_python_and_records_install_time(self):
+        self._cfg()
+        with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")) as inst:
+            code, _ = self.cli("setup", "--schedule")
+        self.assertEqual(code, 0)
+        self.assertEqual(inst.call_args.kwargs.get("python"), "/usr/bin/python3")
+        first = config.load_config().schedule_installed_at
+        self.assertIsInstance(first, int)
+        c = config.load_config()
+        c.schedule_installed_at = 1000
+        config.save_config(c)
+        with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")):
+            self.cli("setup", "--schedule", "--time", "09:00")
+        self.assertEqual(config.load_config().schedule_installed_at, 1000)  # 改时间不重置
 
     def test_setup_schedule_time_hint(self):
         self._cfg()

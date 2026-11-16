@@ -80,6 +80,12 @@ CERT_FIX_MAC = "运行 /Applications/Python 3.x/Install Certificates.command（x
 CERT_FIX_WIN = "更新 Python 或检查公司代理证书"
 
 
+def cert_fix(executable: Optional[str] = None, is_windows: Optional[bool] = None) -> str:
+    """证书校验失败的修法（按系统）。executable：出问题的那个 Python。"""
+    win = _plat.IS_WINDOWS if is_windows is None else is_windows
+    return CERT_FIX_WIN if win else CERT_FIX_MAC
+
+
 def _tls_handshake(host: str, connect: Callable = socket.create_connection,
                    context_factory: Callable = ssl.create_default_context) -> None:
     """对 host:443 做一次 TLS 握手；失败直接抛异常。connect / context_factory 可注入以便离线测试。"""

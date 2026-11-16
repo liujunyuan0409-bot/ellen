@@ -11,6 +11,8 @@ import json
 import logging
 import signal
 import sqlite3
+import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -19,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from . import auth, chats, config, fetcher, notify, perms, schedule, sync, walker
+from . import auth, chats, config, fetcher, notify, perms, schedule, sync, walker, wizard
 from .client import DEFAULT_BASE, ApiError, FeishuClient, default_transport
 from .names import SHANGHAI
 from .platform import awake
@@ -49,6 +51,21 @@ _OFFLINE_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException)
 
 class _Offline(Exception):
     pass
+
+
+class _TlsError(Exception):
+    """连得上但证书校验失败：多半是运行定时任务的 Python 没有可用的根证书，不是离线。"""
+
+
+def _is_cert_error(e) -> bool:
+    r = e.reason if isinstance(e, urllib.error.URLError) else e
+    return isinstance(r, ssl.SSLCertVerificationError) or (
+        isinstance(r, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(r))
+
+
+def _msg_tls() -> str:
+    return "连不上飞书：这台电脑上运行备份的 Python 证书校验失败。修法：%s" % wizard.cert_fix(
+        sys.executable, is_windows=schedule.IS_WINDOWS)
 
 
 # ---------------- 日志 ----------------
@@ -327,18 +344,28 @@ def _notify_failures(r) -> None:
     notify.notify_if_changed(TITLE, msg + "，详见 _报告", "run_failures", ids, now=r.now)
 
 
-def _check_stale(last_success, cfg, now) -> None:
-    """定时运行开头：连续错过两个计划时间点就提醒（每天最多一次），防止静默地一直不成功。"""
+def _check_stale(last_success, cfg, now, store=None) -> None:
+    """定时运行开头：连续错过两个计划时间点就提醒（每天最多一次），防止静默地一直不成功。
+    从没成功过时，以第一次尝试的时间为起点；一次都没尝试过，就以装定时任务的时间为起点。"""
     hh, mm = schedule.parse_time(cfg.schedule_time)
-    if not schedule.is_stale(last_success, now, cfg.schedule_weekday, hh, mm):
+    since = last_success
+    if since is None:
+        since = store.first_attempt() if store is not None else None
+        if since is None:
+            since = cfg.schedule_installed_at
+    if not schedule.is_stale(since, now, cfg.schedule_weekday, hh, mm):
         return
-    days = (int(now) - int(last_success)) // 86400
-    log.warning("已经 %d 天没有成功完成备份", days)
-    notify.notify(TITLE, "飞书备份已经 %d 天没有成功完成，对你的 AI 助手说『飞书备份状态』看原因" % days,
-                  key="stale", now=now)
+    days = (int(now) - int(since)) // 86400
+    if last_success is None:
+        log.warning("定时备份装好 %d 天了，还没有成功完成过一次", days)
+        msg = "飞书备份设置好 %d 天了，还没有成功完成过一次，对你的 AI 助手说『飞书备份状态』看原因" % days
+    else:
+        log.warning("已经 %d 天没有成功完成备份", days)
+        msg = "飞书备份已经 %d 天没有成功完成，对你的 AI 助手说『飞书备份状态』看原因" % days
+    notify.notify(TITLE, msg, key="stale", now=now)
 
 
-_NO_WAIT_ABORTS = ("offline", "login_required", "disk_full")  # 不会重复一次昂贵扫描的中止
+_NO_WAIT_ABORTS = ("offline", "login_required", "disk_full", "tls")  # 不会重复一次昂贵扫描的中止
 
 
 def _waiting_retry(row, now) -> bool:
@@ -406,10 +433,12 @@ def install_term_handler() -> None:
 
 
 def _probe(transport, token: str) -> None:
-    """第一个请求：只发一次、不重试；连不上就当离线。"""
+    """第一个请求：只发一次、不重试；证书校验失败另报（不是离线），其他连不上就当离线。"""
     try:
         transport("GET", DEFAULT_BASE + PROBE_PATH, {"Authorization": "Bearer " + token}, None)
     except _OFFLINE_ERRORS as e:
+        if _is_cert_error(e):
+            raise _TlsError(str(e))
         raise _Offline(str(e))
 
 
@@ -461,7 +490,7 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
     try:
         last = store.last_success()
         if not force:
-            _check_stale(last, cfg, now)
+            _check_stale(last, cfg, now, store)
             if _waiting_retry(store.last_run(), now):
                 log.info("上次没读全，6 小时内不重试，跳过")
                 _keep_login_alive(cfg, root, transport, now, sleep)
@@ -516,6 +545,14 @@ def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> i
         log.info("本轮完成：%s", summary)
         _notify_failures(r)
         return 0
+    except _TlsError as e:
+        log.error("证书校验失败（%s），本轮没有备份：%s", sys.executable, e)
+        try:  # 记一次不成功的尝试：从没成功过时，过期提醒以第一次尝试为起点
+            store.finish_run(store.start_run() if run_id is None else run_id, ok=False, summary={"中止": "tls"})
+        except Exception:  # noqa: BLE001
+            log.exception("记录运行结果失败")
+        notify.notify(TITLE, _msg_tls(), key="tls")
+        return 1
     except (_Offline, auth.NetworkError) as e:
         log.info("网络不通，本轮跳过：%s", e)
         _abort(store, run_id, report, root, now, started, "offline")

@@ -355,5 +355,49 @@ class AppCopyTest(unittest.TestCase):
         self.assertTrue(probs)
 
 
+
+class TlsProbeTest(unittest.TestCase):
+    """终审 I1：setup --schedule 用定时任务将要用的 Python 试连一次飞书。"""
+
+    def _run(self, rc=0, exc=None):
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append((cmd, kw))
+            if exc is not None:
+                raise exc
+            return subprocess.CompletedProcess(cmd, rc, "", "")
+        return runner, calls
+
+    def test_ok(self):
+        r, calls = self._run(0)
+        self.assertIsNone(schedule.tls_probe("/x/python3", runner=r))
+        cmd, kw = calls[0]
+        self.assertEqual(cmd[:2], ["/x/python3", "-c"])
+        self.assertIn("open.feishu.cn", cmd[2])
+        self.assertEqual(kw["timeout"], 20)
+
+    def test_cert(self):
+        self.assertEqual(schedule.tls_probe("p", runner=self._run(schedule.TLS_PROBE_CERT)[0]), "cert")
+
+    def test_network(self):
+        self.assertEqual(schedule.tls_probe("p", runner=self._run(schedule.TLS_PROBE_NET)[0]), "network")
+        self.assertEqual(schedule.tls_probe("p", runner=self._run(exc=subprocess.TimeoutExpired("p", 20))[0]),
+                         "network")
+
+    def test_python_unusable(self):
+        self.assertEqual(schedule.tls_probe("p", runner=self._run(exc=OSError("nope"))[0]), "python")
+        self.assertEqual(schedule.tls_probe("p", runner=self._run(1)[0]), "python")
+
+    def test_probe_script_classifies_for_real(self):
+        # 真的用当前 Python 跑探测脚本，但把 urlopen 换成抛证书错误（不联网）
+        import ssl  # noqa: F401
+        src = ("import ssl, urllib.request\n"
+               "def boom(*a, **k): raise ssl.SSLCertVerificationError(1, 'certificate verify failed')\n"
+               "urllib.request.urlopen = boom\n") + schedule.TLS_PROBE_SRC
+        r = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, schedule.TLS_PROBE_CERT, r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

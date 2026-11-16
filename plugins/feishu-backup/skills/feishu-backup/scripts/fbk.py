@@ -216,6 +216,19 @@ def cmd_install(args):
     return 0
 
 
+def _tls_problem_check(problem, python):
+    """setup --schedule 前用定时任务要用的 Python 试连飞书失败：不安装，说清楚怎么修。"""
+    if problem == "cert":
+        return wizard.Check("定时任务", False,
+                            "定时任务要用的 Python（%s）连飞书时证书校验失败，装上也备份不了，所以这次没有安装" % python,
+                            wizard.cert_fix(python, is_windows=schedule.IS_WINDOWS) + "；修好后重新运行 setup --schedule")
+    if problem == "network":
+        return wizard.Check("定时任务", False, "用定时任务要用的 Python（%s）连不上飞书，所以这次没有安装" % python,
+                            "检查网络（公司网络可能要设代理）后重新运行 setup --schedule")
+    return wizard.Check("定时任务", False, "定时任务要用的 Python（%s）运行不了，所以这次没有安装" % python,
+                        "把这一行发给你的 AI 助手排查")
+
+
 def cmd_schedule_install(args, title="[7/7] 定时任务"):
     cfg = _cfg_or_none()
     if cfg is None or not cfg.backup_root:
@@ -234,10 +247,17 @@ def cmd_schedule_install(args, title="[7/7] 定时任务"):
         if tm is not None:
             cfg.schedule_time = "%02d:%02d" % schedule.parse_time(tm)
         config.save_config(cfg)
+    python = schedule.pick_python()
+    problem = schedule.tls_probe(python)
+    if problem is not None:
+        return _checks_out(args, [_tls_problem_check(problem, python)], title)
     try:
-        path = schedule.install()
+        path = schedule.install(python=python)
     except Exception as e:  # noqa: BLE001
         return _checks_out(args, [wizard.Check("定时任务", False, "安装失败：%s" % e, "把这一行发给你的 AI 助手排查")], title)
+    if cfg.schedule_installed_at is None:
+        cfg.schedule_installed_at = int(time.time())
+        config.save_config(cfg)
     detail = "已安装（%s）。计划：%s（错过会在开机后补跑），本机时区。下次计划：%s" % (
         path, _slot_text(cfg), _next_run_dt(cfg).strftime("%Y-%m-%d %H:%M"))
     fix = "卸载：%s schedule uninstall；插件更新后请重新运行 setup --schedule" % _launch_cmd()

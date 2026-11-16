@@ -782,6 +782,65 @@ class StaleAlarmTest(Base):
         self.run_it(force=False)
         self.assertNotIn("stale", self.notified_keys())
 
+    # 终审 I1：从没成功过也要报——按第一次尝试的时间，没有尝试就按装定时任务的时间
+    def test_never_succeeded_old_first_attempt_alarms(self):
+        s = self.store()
+        rid = s.start_run()
+        s.finish_run(rid, False, {"新增": 0})
+        s._write("UPDATE runs SET started=?, finished=? WHERE id=?", (NOW - 20 * 86400, NOW - 20 * 86400, rid))
+        self.run_it(force=False, now=NOW)
+        self.assertIn("stale", self.notified_keys())
+        msg = [c.args[1] for c in self.notify.call_args_list if c.kwargs.get("key") == "stale"][0]
+        self.assertIn("还没有成功完成过", msg)
+
+    def _installed_at(self, ts):
+        c = config.load_config()
+        c.schedule_installed_at = ts
+        config.save_config(c)
+
+    def test_never_succeeded_no_runs_uses_install_time(self):
+        self._installed_at(NOW - 20 * 86400)
+        self.run_it(force=False, now=NOW)
+        self.assertIn("stale", self.notified_keys())
+
+    def test_never_succeeded_recent_install_no_alarm(self):
+        self._installed_at(NOW - 86400)
+        self.run_it(force=False, now=NOW)
+        self.assertNotIn("stale", self.notified_keys())
+
+
+class TlsProbeTest(Base):
+    """终审 I1：证书校验失败不是「离线」——要提醒、记一次不成功、退出码 1。"""
+    PROBE = "/drive/explorer/v2/root_folder/meta"
+
+    def _fail_probe(self, exc):
+        self.t._q[("GET", self.PROBE)] = []
+        self.t.queue("GET", self.PROBE, body=exc)
+
+    def _check(self):
+        self.assertEqual(self.run_it(), 1)
+        self.assertEqual(self.notified_keys(), ["tls"])
+        self.assertIn("证书", self.notify.call_args.args[1])
+        row = self.store().last_run()
+        self.assertEqual(row["ok"], 0)
+        self.assertEqual(json.loads(row["summary"])["中止"], "tls")
+        self.assertFalse(runner._waiting_retry(row, NOW))  # 不拖到 6 小时后才重试
+
+    def test_cert_verification_error(self):
+        import ssl
+        self._fail_probe(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+        self._check()
+
+    def test_cert_error_wrapped_in_urlerror(self):
+        import ssl
+        self._fail_probe(urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed")))
+        self._check()
+
+    def test_plain_network_error_still_offline(self):
+        self._fail_probe(urllib.error.URLError("no route"))
+        self.assertEqual(self.run_it(), 0)
+        self.assertNotIn("tls", self.notified_keys())
+
 
 class IncompleteRetryTest(Base):
     """没读全（ok=0 的真实运行）之后，计划性运行 6 小时内不重试；--now、冒烟跑、离线中止不受影响。"""

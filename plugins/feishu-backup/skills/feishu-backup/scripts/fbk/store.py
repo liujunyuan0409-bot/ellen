@@ -263,6 +263,11 @@ class Store:
                           "WHERE finished IS NOT NULL ORDER BY id DESC LIMIT 1")
         return rows[0] if rows else None
 
+    def first_attempt(self) -> Optional[int]:
+        """最早一次运行的开始时间（不管成没成功）；没有运行记录返回 None。"""
+        rows = self._read("SELECT MIN(started) FROM runs")
+        return rows[0][0] if rows and rows[0][0] is not None else None
+
     def last_success(self) -> Optional[int]:
         rows = self._read("SELECT MAX(finished) FROM runs WHERE ok=1")
         return rows[0][0] if rows and rows[0][0] is not None else None
