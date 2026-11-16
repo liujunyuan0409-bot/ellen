@@ -130,6 +130,20 @@ class AuthTest(unittest.TestCase):
         auth.TokenManager(CFG, transport=t, now=lambda: 1234567890).refresh(config.load_token())
         self.assertEqual(config.load_token()["obtained_at"], 1234567890)
 
+    def test_refresh_cert_error_is_tls_not_retried(self):
+        # 再审 1：续期请求证书校验失败要单独报出来（TlsError），不重试、不当离线
+        import ssl
+        import urllib.error
+        self._stale()
+        t = FakeTransport().queue("POST", "/authen/v2/oauth/token",
+                                  body=urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed")))
+        sleeps = []
+        with self.assertRaises(auth.TlsError):
+            auth.TokenManager(CFG, transport=t, sleep=sleeps.append).access_token()
+        self.assertEqual(len(t.calls), 1)
+        self.assertEqual(sleeps, [])
+        self.assertTrue(issubclass(auth.TlsError, auth.NetworkError))
+
     def _stale(self, **extra):
         tok = {"access_token": "old", "refresh_token": "R1", "expires_in": 7200,
                "obtained_at": int(time.time()) - 7000}

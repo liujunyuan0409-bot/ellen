@@ -836,6 +836,33 @@ class TlsProbeTest(Base):
         self._fail_probe(urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed")))
         self._check()
 
+    def _cert_exc(self):
+        import ssl
+        return urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+
+    def test_expired_token_refresh_cert_error_main_path(self):
+        # 再审 1：每周一次的定时运行时 2 小时的访问令牌早过期了，第一个请求是续期，证书错误在这里出现
+        config.save_token({"access_token": "u-old", "refresh_token": "r-old", "expires_in": 7200,
+                           "obtained_at": int(time.time()) - 3 * 86400})
+        self.t.queue("POST", "/authen/v2/oauth/token", body=self._cert_exc())
+        sleeps = []
+        self.assertEqual(runner.run(transport=self.t, sleep=sleeps.append, force=True, now=NOW), 1)
+        self.assertEqual(self.notified_keys(), ["tls"])
+        self.assertEqual(sleeps, [])
+        row = self.store().last_run()
+        self.assertEqual((row["ok"], json.loads(row["summary"])["中止"]), (0, "tls"))
+
+    def test_expired_token_renewal_cert_error(self):
+        s = self.store()
+        s.finish_run(s.start_run(), True, {})  # 本周已成功 → 只走「顺手续期」
+        config.save_token({"access_token": "u-old", "refresh_token": "r-old", "expires_in": 7200,
+                           "obtained_at": int(time.time()) - 3 * 86400})
+        self.t.queue("POST", "/authen/v2/oauth/token", body=self._cert_exc())
+        self.assertEqual(self.run_it(force=False, now=int(time.time())), 1)
+        self.assertEqual(self.notified_keys(), ["tls"])
+        self.assertIsNotNone(self.store().last_success())  # 成功记录不受影响
+        self.assertEqual(json.loads(self.store().last_run()["summary"])["中止"], "tls")
+
     def test_plain_network_error_still_offline(self):
         self._fail_probe(urllib.error.URLError("no route"))
         self.assertEqual(self.run_it(), 0)

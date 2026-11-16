@@ -11,7 +11,6 @@ import json
 import logging
 import signal
 import sqlite3
-import ssl
 import sys
 import threading
 import time
@@ -53,14 +52,19 @@ class _Offline(Exception):
     pass
 
 
-class _TlsError(Exception):
-    """连得上但证书校验失败：多半是运行定时任务的 Python 没有可用的根证书，不是离线。"""
+_TlsError = auth.TlsError  # 探测请求和续期请求的证书校验失败都用它（是 NetworkError 的子类，要先于它捕获）
+_is_cert_error = auth.is_cert_error
 
 
-def _is_cert_error(e) -> bool:
-    r = e.reason if isinstance(e, urllib.error.URLError) else e
-    return isinstance(r, ssl.SSLCertVerificationError) or (
-        isinstance(r, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(r))
+def _tls_failed(store, run_id, e) -> int:
+    """证书校验失败：记一次不成功的尝试（从没成功过时，过期提醒以第一次尝试为起点），提醒（每天最多一次），退出码 1。"""
+    log.error("证书校验失败（%s），本轮没有备份：%s", sys.executable, e)
+    try:
+        store.finish_run(store.start_run() if run_id is None else run_id, ok=False, summary={"中止": "tls"})
+    except Exception:  # noqa: BLE001
+        log.exception("记录运行结果失败")
+    notify.notify(TITLE, _msg_tls(), key="tls")
+    return 1
 
 
 def _msg_tls() -> str:
@@ -386,27 +390,34 @@ KEEP_LOGIN_AFTER = 86400  # 秒：登录信息超过一天没续期，定时检�
 KEEP_LOGIN_TIMEOUT = 15  # 秒：拿着运行锁续期，只试一次、短超时、不退避（别让「立即备份」等太久）
 
 
-def _keep_login_alive(cfg, root, transport, now: int, sleep=time.sleep) -> None:
+def _keep_login_alive(cfg, root, transport, now: int, sleep=time.sleep, store=None) -> int:
     """没到备份时间、直接退出前顺手续期登录（只是一次登录续期请求，不碰任何文件）。
 
     飞书的续期凭据只管 7 天，而每周才真正备份一次：不续期的话，下周那次只要晚开机一点就得重新登录。
     另一个进程正在备份时跳过（它自己会续期；两边同时续期会让旧凭据作废）。
-    没网或飞书暂时拒绝（非凭据失效的错误码）静默跳过、下个小时再试；续期凭据失效才提醒重新登录（每天最多一次）。"""
+    没网或飞书暂时拒绝（非凭据失效的错误码）静默跳过、下个小时再试；续期凭据失效才提醒重新登录（每天最多一次）；
+    证书校验失败按 _tls_failed 处理。返回 run() 的退出码（0，或证书失败时 1）。"""
     try:
         tok = config.load_token()
     except (OSError, ValueError):
-        return
+        return 0
     if not isinstance(tok, dict) or not tok.get("refresh_token"):
-        return
+        return 0
     if int(now) - int(tok.get("obtained_at") or 0) < KEEP_LOGIN_AFTER:
-        return
+        return 0
     try:
         lock = schedule.RunLock(root).acquire()
     except (schedule.AlreadyRunning, OSError):
-        return
+        return 0
     try:
         auth.TokenManager(cfg, transport=transport, sleep=sleep).refresh(tok, attempts=1, timeout=KEEP_LOGIN_TIMEOUT)
         log.info("已续期登录")
+    except auth.TlsError as e:
+        if store is None:
+            log.error("续期登录时证书校验失败：%s", e)
+            notify.notify(TITLE, _msg_tls(), key="tls")
+            return 1
+        return _tls_failed(store, None, e)
     except auth.RefreshFailed as e:
         log.warning("续期登录暂时没成功，下次再试：%s", e)
     except auth.NetworkError as e:
@@ -418,6 +429,7 @@ def _keep_login_alive(cfg, root, transport, now: int, sleep=time.sleep) -> None:
         log.exception("续期登录出错")
     finally:
         lock.release()
+    return 0
 
 
 def _on_term(signum, frame):
@@ -493,13 +505,11 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
             _check_stale(last, cfg, now, store)
             if _waiting_retry(store.last_run(), now):
                 log.info("上次没读全，6 小时内不重试，跳过")
-                _keep_login_alive(cfg, root, transport, now, sleep)
-                return 0
+                return _keep_login_alive(cfg, root, transport, now, sleep, store)
             hh, mm = schedule.parse_time(cfg.schedule_time)
             if not schedule.is_due(last, now, cfg.schedule_weekday, hh, mm):
                 log.info("本周期已经成功备份过，跳过")
-                _keep_login_alive(cfg, root, transport, now, sleep)
-                return 0
+                return _keep_login_alive(cfg, root, transport, now, sleep, store)
         try:
             lock = schedule.RunLock(root).acquire()
         except schedule.AlreadyRunning as e:
@@ -522,7 +532,7 @@ def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> i
     n = fetcher.clean_parts(root)
     if n:
         log.info("清理了 %d 个中断留下的临时文件", n)
-    tm = auth.TokenManager(cfg, transport=transport)
+    tm = auth.TokenManager(cfg, transport=transport, sleep=sleep)
     run_id = None
     report = RunReport()
     started = int(time.time())
@@ -545,14 +555,8 @@ def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> i
         log.info("本轮完成：%s", summary)
         _notify_failures(r)
         return 0
-    except _TlsError as e:
-        log.error("证书校验失败（%s），本轮没有备份：%s", sys.executable, e)
-        try:  # 记一次不成功的尝试：从没成功过时，过期提醒以第一次尝试为起点
-            store.finish_run(store.start_run() if run_id is None else run_id, ok=False, summary={"中止": "tls"})
-        except Exception:  # noqa: BLE001
-            log.exception("记录运行结果失败")
-        notify.notify(TITLE, _msg_tls(), key="tls")
-        return 1
+    except _TlsError as e:  # 探测请求或（令牌过期时先发的）续期请求证书校验失败
+        return _tls_failed(store, run_id, e)
     except (_Offline, auth.NetworkError) as e:
         log.info("网络不通，本轮跳过：%s", e)
         _abort(store, run_id, report, root, now, started, "offline")

@@ -2,6 +2,7 @@
 import http.client
 import json
 import secrets
+import ssl
 import threading
 import time
 import urllib.error
@@ -54,6 +55,17 @@ RETRIES = 3
 REFRESH_INVALID_CODES = frozenset({20026, 20037, 20064, 20073, 20074})
 
 
+class TlsError(NetworkError):
+    """连得上飞书，但证书校验失败：多半是这个 Python 没有可用的根证书。不是离线，重试也没用。"""
+
+
+def is_cert_error(e) -> bool:
+    """证书校验失败（直接的，或包在 URLError.reason 里的）。其他 SSL 错误（如连接被断开）不算。"""
+    r = e.reason if isinstance(e, urllib.error.URLError) else e
+    return isinstance(r, ssl.SSLCertVerificationError) or (
+        isinstance(r, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(r))
+
+
 class RefreshFailed(NetworkError):
     """续期被飞书以「非凭据失效」的原因拒绝（服务端繁忙等）：暂时故障，不提示重新登录。"""
 
@@ -79,6 +91,8 @@ def _post_json(transport, path, payload, sleep=time.sleep, attempts=None, timeou
             status, _h, raw = transport("POST", DEFAULT_BASE + path,
                                         {"Content-Type": "application/json; charset=utf-8"}, body, **extra)
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            if is_cert_error(e):
+                raise TlsError("证书校验失败：%s" % e)
             last = e
         else:
             if status < 500:
