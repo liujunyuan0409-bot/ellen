@@ -350,13 +350,14 @@ def _notify_failures(r) -> None:
 
 def _check_stale(last_success, cfg, now, store=None) -> None:
     """定时运行开头：连续错过两个计划时间点就提醒（每天最多一次），防止静默地一直不成功。
-    从没成功过时，以第一次尝试的时间为起点；一次都没尝试过，就以装定时任务的时间为起点。"""
+    从没成功过时，起点取「第一次真实尝试」和「第一次装定时任务」中较晚的那个（早年的冒烟跑不会让刚装好就报警）；
+    两个都没有就不报。"""
     hh, mm = schedule.parse_time(cfg.schedule_time)
     since = last_success
     if since is None:
-        since = store.first_attempt() if store is not None else None
-        if since is None:
-            since = cfg.schedule_installed_at
+        cands = [t for t in ((store.first_attempt() if store is not None else None), cfg.schedule_installed_at)
+                 if t is not None]
+        since = max(cands) if cands else None
     if not schedule.is_stale(since, now, cfg.schedule_weekday, hh, mm):
         return
     days = (int(now) - int(since)) // 86400

@@ -803,6 +803,24 @@ class StaleAlarmTest(Base):
         self.run_it(force=False, now=NOW)
         self.assertIn("stale", self.notified_keys())
 
+    def _old_run(self, summary, days=20):
+        s = self.store()
+        rid = s.start_run()
+        s.finish_run(rid, False, summary)
+        s._write("UPDATE runs SET started=?, finished=? WHERE id=?", (NOW - days * 86400, NOW - days * 86400, rid))
+
+    def test_never_succeeded_old_attempt_then_recent_install_no_alarm(self):
+        # 再审 5：起点取「第一次尝试」和「装定时任务」中较晚的那个
+        self._old_run({"新增": 0})
+        self._installed_at(NOW - 86400)
+        self.run_it(force=False, now=NOW)
+        self.assertNotIn("stale", self.notified_keys())
+
+    def test_old_limit_smoke_run_not_a_baseline(self):
+        self._old_run({"新增": 1, "limit": 5})  # 很早以前的冒烟跑（--limit）不算尝试
+        self.run_it(force=False, now=NOW)
+        self.assertNotIn("stale", self.notified_keys())
+
     def test_never_succeeded_recent_install_no_alarm(self):
         self._installed_at(NOW - 86400)
         self.run_it(force=False, now=NOW)

@@ -264,8 +264,8 @@ class Store:
         return rows[0] if rows else None
 
     def first_attempt(self) -> Optional[int]:
-        """最早一次运行的开始时间（不管成没成功）；没有运行记录返回 None。"""
-        rows = self._read("SELECT MIN(started) FROM runs")
+        """最早一次真实运行的开始时间（不管成没成功；--limit 冒烟跑不算）；没有返回 None。"""
+        rows = self._read("SELECT MIN(started) FROM runs WHERE summary IS NULL OR summary NOT LIKE '%\"limit\":%'")
         return rows[0][0] if rows and rows[0][0] is not None else None
 
     def last_success(self) -> Optional[int]:
