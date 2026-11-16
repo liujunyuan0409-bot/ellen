@@ -6,6 +6,8 @@ from . import IS_WINDOWS
 
 _BUSY = (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EDEADLK)
 
+_WIN_BUSY = tuple({errno.EACCES, errno.EDEADLK, getattr(errno, "EDEADLOCK", errno.EDEADLK)})
+
 
 def _posix_try_lock(fd: int, fcntl=None) -> bool:
     if fcntl is None:
@@ -32,8 +34,10 @@ def _windows_try_lock(fd: int, msvcrt=None) -> bool:
     os.lseek(fd, 0, os.SEEK_SET)
     try:
         msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-    except OSError:
-        return False
+    except OSError as e:
+        if e.errno in _WIN_BUSY:
+            return False
+        raise
     return True
 
 

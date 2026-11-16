@@ -358,7 +358,7 @@ def install_term_handler() -> None:
     """launchd 在关机/注销时发 SIGTERM：转成 SystemExit，让 finally（释放锁、关清单）都能执行。
     只能在主线程调用（fbk.py run 入口）。"""
     signal.signal(signal.SIGTERM, _on_term)
-    if hasattr(signal, "SIGBREAK"):  # Windows 关机 / 关控制台
+    if hasattr(signal, "SIGBREAK"):  # Windows 只有 Ctrl-Break 会发 SIGBREAK；关控制台 / 关机会直接结束进程，由系统释放锁和防睡眠状态
         signal.signal(signal.SIGBREAK, _on_term)
 
 

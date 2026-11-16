@@ -90,7 +90,7 @@ class RunLock:
     """root/.feishu-backup/run.lock 上的排他锁（posix flock / Windows msvcrt.locking），整轮运行期间持有。
 
     锁由内核随进程退出（含被 SIGTERM/SIGKILL 杀掉、关机）自动释放，所以不会有「死锁文件」挡住
-    以后的备份。文件里的 PID 只供人看，不参与判断；锁文件本身不删除（删了会让两个进程锁住不同的文件）。
+    以后的备份。文件里的 PID 只供人看，不参与判断（Windows 上 PID 所在字节被锁住，其他进程读不到，此时「已有备份进程在运行」提示不带 PID）；锁文件本身不删除（删了会让两个进程锁住不同的文件）。
     """
 
     def __init__(self, root):
@@ -106,7 +106,7 @@ class RunLock:
 
     def acquire(self):
         self.path.parent.mkdir(exist_ok=True)  # root 必须已存在，这里不建 root
-        fd = os.open(fsnames.lp(self.path), os.O_RDWR | os.O_CREAT, 0o644)
+        fd = os.open(fsnames.lp(self.path), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
         try:
             got = _lock.try_lock(fd)
         except BaseException:

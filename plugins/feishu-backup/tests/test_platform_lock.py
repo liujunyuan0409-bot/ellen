@@ -1,3 +1,4 @@
+import errno
 import os
 import signal
 import sys
@@ -41,6 +42,30 @@ class WindowsLockTest(unittest.TestCase):
 
     def test_busy_returns_false(self):
         self.assertFalse(lock._windows_try_lock(self.fd, FakeMsvcrt(busy=True)))
+
+    def test_other_oserror_is_reraised(self):
+        with self.assertRaises(OSError):
+            lock._windows_try_lock(self.fd, FakeMsvcrt(exc=OSError(errno.EBADF, "bad")))
+
+    def test_deadlock_errno_is_busy(self):
+        self.assertFalse(lock._windows_try_lock(self.fd, FakeMsvcrt(exc=OSError(errno.EDEADLK, "d"))))
+
+    def test_acquire_success_writes_pid_after_lock_and_release_unlocks_before_close(self):
+        d = tempfile.mkdtemp()
+        events = []
+        m = FakeMsvcrt()
+        orig = m.locking
+        m.locking = lambda fd, mode, n: (events.append("lock" if mode == m.LK_NBLCK else "unlock"), orig(fd, mode, n))[1]
+        real_write, real_close = os.write, os.close
+        with mock.patch.object(lock, "try_lock", lambda fd: lock._windows_try_lock(fd, m)), \
+             mock.patch.object(lock, "unlock", lambda fd: lock._windows_unlock(fd, m)), \
+             mock.patch.object(os, "write", lambda fd, b: (events.append("write"), real_write(fd, b))[1]), \
+             mock.patch.object(os, "close", lambda fd: (events.append("close"), real_close(fd))[1]):
+            rl = schedule.RunLock(d).acquire()
+            rl.release()
+        self.assertEqual(events[:2], ["lock", "write"])
+        self.assertLess(events.index("unlock"), len(events) - 1 - events[::-1].index("close"))
+        self.assertEqual(events[-2:], ["unlock", "close"])
 
     def test_unlock_uses_lk_unlck_at_offset_zero(self):
         m = FakeMsvcrt()
