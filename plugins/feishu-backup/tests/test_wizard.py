@@ -819,3 +819,31 @@ class AiAgnosticTextTest(unittest.TestCase):
         files = list(base.rglob("*.py")) + [base.parent / "fbk.py"]
         hits = [str(f) for f in files if "Claude" in f.read_text(encoding="utf-8")]
         self.assertEqual(hits, [])
+
+
+class WindowsStdioTest(unittest.TestCase):
+    """中文 Windows 上输出被 AI 工具接走（管道）时，Python 默认按 GBK 编码，打印 ✓ 会直接报错退出。"""
+
+    def _pipe(self, enc="cp936"):
+        raw = io.BytesIO()
+        return raw, io.TextIOWrapper(raw, encoding=enc)
+
+    def test_gbk_pipe_switched_to_utf8_on_windows(self):
+        raw, out = self._pipe()
+        cli._utf8_stdio([out], is_windows=True, env={})
+        print("✓ 列我的空间", file=out)
+        out.flush()
+        self.assertEqual(raw.getvalue().decode("utf-8"), "✓ 列我的空间\n")
+
+    def test_respects_pythonioencoding(self):
+        _raw, out = self._pipe()
+        cli._utf8_stdio([out], is_windows=True, env={"PYTHONIOENCODING": "gbk"})
+        self.assertEqual(out.encoding, "cp936")
+
+    def test_mac_untouched(self):
+        _raw, out = self._pipe()
+        cli._utf8_stdio([out], is_windows=False, env={})
+        self.assertEqual(out.encoding, "cp936")
+
+    def test_none_stream_ok(self):
+        cli._utf8_stdio([None], is_windows=True, env={})  # pythonw.exe 下 sys.stdout 是 None

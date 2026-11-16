@@ -505,7 +505,23 @@ def build_parser():
     return p
 
 
+def _utf8_stdio(streams, is_windows=None, env=os.environ):
+    """中文 Windows 上输出被 AI 工具或重定向接走时，Python 默认按 GBK 编码，打印 ✓ ✗ ⚠ 会报错退出：
+    改成 UTF-8（编不了的字符替换掉，绝不因输出报错）。用户自己设了 PYTHONIOENCODING 就照用户的。"""
+    win = fplat.IS_WINDOWS if is_windows is None else is_windows
+    if not win or env.get("PYTHONIOENCODING"):
+        return
+    for s in streams:
+        enc = (getattr(s, "encoding", None) or "").lower().replace("-", "")
+        if s is not None and enc != "utf8" and hasattr(s, "reconfigure"):
+            try:
+                s.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, ValueError, OSError):
+                pass
+
+
 def main(argv=None):
+    _utf8_stdio([sys.stdout, sys.stderr])
     args = build_parser().parse_args(argv)
     if getattr(args, "create", False) and not getattr(args, "root", None):
         print("--create 只能和 --root 一起用")
