@@ -145,13 +145,53 @@ class CleanupTest(Base):
     def test_same_version_in_use_aside_dir_kept_until_free(self):
         appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
         fd = self._hold("1.0.0")
-        appcopy.install(make_src(self.base / "again", "1.0.0"), self.root, "1.0.0")
+        appcopy.install(make_src(self.base / "again", "1.0.0", main=FAKE_MAIN + "\n# changed\n"), self.root, "1.0.0")
         aside = [p for p in (self.root / "versions").iterdir() if p.name != "1.0.0"]
         self.assertEqual(len(aside), 1)
         self.assertTrue(aside[0].name.startswith(".1.0.0.old-"))
         os.close(fd)
         appcopy.cleanup(self.root)
         self.assertEqual([p.name for p in (self.root / "versions").iterdir()], ["1.0.0"])
+
+    def _windows_like_replace(self):
+        """模拟 Windows：被运行中的进程打开着 in_use 的版本目录不能改名。"""
+        real = os.replace
+        busy = str(self.root / "versions" / "1.0.0")
+
+        def replace(src, dst):
+            if os.path.abspath(str(src)) == os.path.abspath(busy):
+                raise PermissionError(13, "Access is denied", str(src))
+            return real(src, dst)
+        return replace
+
+    def test_install_from_inside_running_copy_skips_swap(self):
+        # 启动器运行 versions/1.0.0/fbk.py setup --schedule：复制源就是目标本身，且 in_use 正被占着
+        appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
+        self._hold("1.0.0")
+        (self.root / "launch.py").unlink()
+        (self.root / "current").write_text("bogus-old", encoding="utf-8")
+        from unittest import mock
+        with mock.patch.object(appcopy.os, "replace", side_effect=self._windows_like_replace()):
+            launcher = appcopy.install(self.root / "versions" / "1.0.0", self.root, "1.0.0")
+        self.assertTrue(launcher.is_file())
+        self.assertEqual(appcopy.read_current(self.root), "1.0.0")
+        self.assertEqual([p.name for p in (self.root / "versions").iterdir()], ["1.0.0"])  # 没有 .old-* / .new-*
+        self.assertTrue((self.root / "versions" / "1.0.0" / "fbk.py").is_file())
+        self.assertIsNone(appcopy.verify(self.root, "1.0.0"))
+
+    def test_identical_copy_reinstall_does_not_swap(self):
+        appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
+        self._hold("1.0.0")
+        from unittest import mock
+        with mock.patch.object(appcopy.os, "replace", side_effect=self._windows_like_replace()):
+            appcopy.install(make_src(self.base / "again", "1.0.0"), self.root, "1.0.0")
+        self.assertEqual([p.name for p in (self.root / "versions").iterdir()], ["1.0.0"])
+        self.assertIsNone(appcopy.verify(self.root, "1.0.0"))
+
+    def test_different_content_same_version_still_swaps(self):
+        appcopy.install(make_src(self.base, "1.0.0", main="OLD"), self.root, "1.0.0")
+        appcopy.install(make_src(self.base / "again", "1.0.0", main="NEW"), self.root, "1.0.0")
+        self.assertEqual((self.root / "versions" / "1.0.0" / "fbk.py").read_text(), "NEW")
 
     def test_cleanup_never_touches_current_symlinks_files_or_tmp(self):
         appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")

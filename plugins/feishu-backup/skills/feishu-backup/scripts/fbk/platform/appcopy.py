@@ -8,6 +8,7 @@
       versions/<版本号>/    fbk.py + fbk/ 的完整副本；in_use 是「有进程正在用」的锁文件
 
 - 安装：先复制到 versions/ 下的临时目录再改名；同版本已存在就先挪到旁边、新副本到位后再清掉；
+  复制源就是目标本身（从启动器运行的副本里安装），或目标已是一模一样的同版本副本时，不复制也不换目录；
   然后原子改写 current 和 launch.py（临时文件 + os.replace）。任何时刻 current 都指向一个完整的副本。
 - 「正在用」：启动器在整个运行期间对 versions/<v>/in_use 持有**共享**锁（posix flock LOCK_SH；
   Windows 没有共享锁，就在前 IN_USE_SLOTS 个字节里锁住一个空闲字节）。清理时要拿到**整个文件的排他锁**
@@ -19,6 +20,7 @@
   安装时的旁置名（.<版本>.old-<pid>）；current 指向的版本永远不删；current 读不出来时什么都不删。
 - v0.1.0 的旧布局（app_root 下直接是 fbk.py + fbk/）：挪进 app_root/app.legacy-<时间>/，永不删除。
 """
+import filecmp
 import os
 import re
 import shutil
@@ -296,6 +298,10 @@ def install(src_dir: Path, app_root: Path, version: str) -> Path:
     if not _is_real_dir(vers):
         raise RuntimeError("%s 不是普通文件夹，没法放程序副本" % vers)
     target = vers / version
+    if _same_dir(src, target) or _identical_copy(src, target, version):
+        # 从正在运行的副本里安装（启动器 → setup --schedule），或目标已是一模一样的副本：不复制、不换目录
+        # （Windows 上被占用的目录改不了名；mac 上也不必留一个多余的旁置目录），只改写 current 和启动器。
+        return _finish(app_root, version)
     tmp = vers / (".%s.new-%d" % (version, os.getpid()))
     aside = vers / (".%s.old-%d" % (version, os.getpid()))
     if _is_real_dir(tmp):
@@ -325,11 +331,48 @@ def install(src_dir: Path, app_root: Path, version: str) -> Path:
         if _is_real_dir(tmp):
             shutil.rmtree(lp(tmp), ignore_errors=True)
         raise
+    return _finish(app_root, version)
+
+
+def _finish(app_root: Path, version: str) -> Path:
     _atomic_write(app_root / CURRENT, version)
     launcher = app_root / LAUNCHER
     _atomic_write(launcher, LAUNCHER_SOURCE)
     cleanup(app_root)
     return launcher
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return os.path.lexists(lp(b)) and os.path.samefile(lp(a), lp(b))
+    except OSError:
+        return False
+
+
+_CMP_IGNORE = list(filecmp.DEFAULT_IGNORES) + [IN_USE, "__pycache__"]
+
+
+def _trees_equal(d: filecmp.dircmp) -> bool:
+    if d.left_only or d.right_only or d.diff_files or d.funny_files or d.common_funny:
+        return False
+    # dircmp 默认按 stat 签名比较；签名不同才比内容。这里对共同文件再按内容确认一遍，避免同签名不同内容
+    _, mismatch, errors = filecmp.cmpfiles(d.left, d.right, d.common_files, shallow=False)
+    if mismatch or errors:
+        return False
+    return all(_trees_equal(sub) for sub in d.subdirs.values())
+
+
+def _identical_copy(src: Path, target: Path, version: str) -> bool:
+    """target 已是 src 的完整、同版本副本（忽略 in_use 和 __pycache__）。"""
+    if not _is_real_dir(target) or copied_version(target) != version:
+        return False
+    try:
+        extra = set(os.listdir(lp(target))) - {"fbk.py", "fbk", IN_USE, "__pycache__"}
+        if extra or not filecmp.cmp(lp(src / "fbk.py"), lp(target / "fbk.py"), shallow=False):
+            return False
+        return _trees_equal(filecmp.dircmp(lp(src / "fbk"), lp(target / "fbk"), ignore=_CMP_IGNORE))
+    except OSError:
+        return False
 
 
 def copied_version(vdir: Path) -> Optional[str]:
