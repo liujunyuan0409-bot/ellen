@@ -199,6 +199,14 @@ class CleanupTest(Base):
         self.assertTrue((target / "fbk.py").is_file())
         self.assertTrue((src / "fbk.py").is_file())  # 链接指向的源码不受影响
 
+    def test_extra_vcs_like_file_means_not_identical(self):
+        # 再审 3：filecmp 的默认忽略表（RCS、tags 等）不能让多出来的文件被当成「一样」
+        appcopy.install(make_src(self.base, "1.0.0"), self.root, "1.0.0")
+        src2 = make_src(self.base / "again", "1.0.0")
+        (src2 / "fbk" / "tags").write_text("new file")
+        appcopy.install(src2, self.root, "1.0.0")
+        self.assertEqual((self.root / "versions" / "1.0.0" / "fbk" / "tags").read_text(), "new file")
+
     def test_different_content_same_version_still_swaps(self):
         appcopy.install(make_src(self.base, "1.0.0", main="OLD"), self.root, "1.0.0")
         appcopy.install(make_src(self.base / "again", "1.0.0", main="NEW"), self.root, "1.0.0")

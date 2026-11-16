@@ -360,7 +360,7 @@ def _same_dir(a: Path, b: Path) -> bool:
         return False
 
 
-_CMP_IGNORE = list(filecmp.DEFAULT_IGNORES) + [IN_USE, "__pycache__"]
+_CMP_IGNORE = [IN_USE, "__pycache__"]  # 只忽略这两个；不用 filecmp.DEFAULT_IGNORES（RCS、tags 等也要比）
 
 
 def _trees_equal(d: filecmp.dircmp) -> bool:
