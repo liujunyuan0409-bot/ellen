@@ -827,6 +827,19 @@ class CliRunTest(CliBase):
             self.cli("setup", "--schedule", "--time", "09:00")
         self.assertEqual(config.load_config().schedule_installed_at, 1000)  # 改时间不重置
 
+    def test_setup_schedule_corrupt_config_says_so(self):
+        # 终审 M4：配置文件坏了不能说成「还没设置备份目录」
+        self._cfg()
+        (config.CONFIG_DIR / "config.json").write_text("{not json", encoding="utf-8")
+        with mock.patch.object(schedule, "install") as inst:
+            code, out = self.cli("setup", "--schedule")
+        self.assertEqual(code, 1)
+        inst.assert_not_called()
+        self.assertIn("配置文件损坏", out)
+        self.assertNotIn("还没设置备份目录", out)
+        self.assertIn("setup --credentials", out)
+        self.assertIn("setup --root", out)
+
     def test_setup_schedule_time_hint(self):
         self._cfg()
         with mock.patch.object(schedule, "install", return_value=Path("/x/p.plist")):

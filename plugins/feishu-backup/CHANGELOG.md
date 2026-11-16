@@ -48,6 +48,7 @@
 - `setup --status` 的第 7 步：定时任务装了但跑不了时显示 ✗ 和原因，不再显示 ✓。
 - `schedule uninstall` 删不掉定时任务时（如 Windows 上拒绝访问）给中文的 ✗ 和手动删除的步骤，退出码 1，不再抛英文异常。
 - `setup --schedule --weekday` 写错（如 `abc`、`周一`）时给中文提示，不再是 argparse 的英文报错。
+- 配置文件损坏时 `setup --schedule` 直接说「配置文件损坏」并给出重写步骤（`setup --credentials` → `setup --root`），不再误报「还没设置备份目录」。
 
 ### 文档
 - README 改写：macOS + Windows、每周一次与「历史版本是每周快照」、授权是累计的（如何撤销后重新登录得到真正只读的登录）、多人 / 多台电脑各自登录、登录有效期、两个系统分别的卸载步骤。

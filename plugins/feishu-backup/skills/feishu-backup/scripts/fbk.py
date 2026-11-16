@@ -230,7 +230,13 @@ def _tls_problem_check(problem, python):
 
 
 def cmd_schedule_install(args, title="[7/7] 定时任务"):
-    cfg = _cfg_or_none()
+    try:
+        cfg = config.load_config()
+    except config.ConfigCorrupt as e:
+        return _fail(args, str(e), "重新运行 setup --credentials（会重写配置文件），再运行 setup --root <备份目录>，"
+                                   "然后再运行 setup --schedule")
+    except (config.ConfigMissing, ValueError, KeyError):
+        cfg = None
     if cfg is None or not cfg.backup_root:
         return _fail(args, "还没设置备份目录", "先完成 setup --credentials 和 setup --root")
     wd, tm = getattr(args, "weekday", None), getattr(args, "time", None)
