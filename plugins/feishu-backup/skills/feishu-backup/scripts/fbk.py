@@ -484,7 +484,12 @@ def cmd_perms(args):
 def cmd_schedule(args):
     if args.action == "install":
         return cmd_schedule_install(args, title="定时任务")
-    schedule.uninstall()
+    try:
+        schedule.uninstall()
+    except (RuntimeError, OSError) as e:
+        fix = (("打开「任务计划程序」，在左边「任务计划程序库」里找到「%s」，右键删除；还不行就把这一行发给你的 AI 助手"
+                % schedule.TASK_NAME) if schedule.IS_WINDOWS else "把这一行发给你的 AI 助手排查")
+        return _checks_out(args, [wizard.Check("卸载定时任务", False, "没卸载掉：%s" % e, fix)])
     _emit(args, {"ok": True}, "已卸载定时任务。备份文件和清单都保留，没有删除任何东西。")
     return 0
 

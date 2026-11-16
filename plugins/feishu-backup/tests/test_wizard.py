@@ -865,6 +865,22 @@ class CliRunTest(CliBase):
         u.assert_called_once()
         self.assertTrue(json.loads(out)["ok"])
 
+    def test_schedule_uninstall_failure_is_chinese_exit_1(self):
+        # 终审 M2：Windows 上 schtasks 删不掉时不能抛英文异常
+        with mock.patch.object(schedule, "uninstall", side_effect=RuntimeError("从任务计划程序删除任务失败（schtasks 返回 1）：拒绝访问")):
+            code, out = self.cli("schedule", "uninstall")
+            jcode, jout = self.cli("schedule", "uninstall", "--json")
+        self.assertEqual((code, jcode), (1, 1))
+        self.assertIn("✗", out)
+        self.assertIn("拒绝访问", out)
+        self.assertIn("任务计划程序", out)
+        self.assertFalse(json.loads(jout)["ok"])
+        with mock.patch.object(schedule, "uninstall", side_effect=RuntimeError("x")), \
+                mock.patch.object(schedule, "IS_WINDOWS", True):
+            code, out = self.cli("schedule", "uninstall")
+        self.assertEqual(code, 1)
+        self.assertIn("任务计划程序库", out)
+
     def test_scan_nothing_readable_fails_and_not_saved(self):
         config.save_config(config.Config("cli_fake", "sec_fake"))
         empty = {"items_by_type": {}, "total_items": 0, "upload_count": 0, "upload_bytes": 0,
