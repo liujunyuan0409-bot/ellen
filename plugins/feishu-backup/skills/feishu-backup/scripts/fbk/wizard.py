@@ -426,13 +426,14 @@ def estimate_minutes(export_count: int, upload_bytes: int) -> int:
 
 
 def scan_stats(client, sleep=time.sleep, clock=time.monotonic, rng=None, sample=SAMPLE_PER_TYPE,
-               export_timeout=EXPORT_TIMEOUT, workers=4, export_workers=EXPORT_PARALLEL) -> dict:
-    """遍历我的空间 + 知识库，只统计不下载。"""
+               export_timeout=EXPORT_TIMEOUT, workers=4, export_workers=EXPORT_PARALLEL, only: str = "") -> dict:
+    """遍历我的空间 + 知识库，只统计不下载。only 非空时只统计这个目录。"""
+    only_key = walker.parse_only(only) if only else ()
     rng = rng or random.Random()
     errors = []
     items, seen = [], set()
     for gen in (walker.walk_my_space(client, errors), walker.walk_wiki(client, errors)):
-        for it in gen:
+        for it in (walker.filter_only(gen, only_key) if only else gen):
             if it.token and it.token not in seen:
                 seen.add(it.token)
                 items.append(it)
@@ -486,6 +487,7 @@ def scan_stats(client, sleep=time.sleep, clock=time.monotonic, rng=None, sample=
         "skipped_types": skipped,
         "walk_errors": len(errors),
         "est_minutes": estimate_minutes(export_count, upload_bytes),
+        "only": only,
     }
 
 
@@ -497,7 +499,8 @@ def _fmt_minutes(m: int) -> str:
 
 def format_scan(st: dict) -> str:
     lines = ["只统计，没有下载任何文件。",
-             "我的空间 + 知识库共 {:,} 项：".format(st["total_items"]),
+             ("「%s」下共 {:,} 项：" % st["only"] if st.get("only") else "我的空间 + 知识库共 {:,} 项：")
+             .format(st["total_items"]),
              "  上传的文件 {:,} 个，共 {}（精确统计）".format(st["upload_count"], gb(st["upload_bytes"]))]
     if st.get("upload_unknown"):
         lines.append("    其中 %d 个读不到大小，没算进去" % st["upload_unknown"])
@@ -510,7 +513,7 @@ def format_scan(st: dict) -> str:
         parts = ["%s %d 个" % (TYPE_LABEL.get(t, t), n) for t, n in sorted(st["skipped_types"].items())]
         lines.append("  不支持导出、会跳过：" + "、".join(parts))
     total = st["upload_bytes"] + st["export_est_bytes"]
-    lines.append("首次备份合计约 %s，预计耗时约 %s（按导出每份约 %d 秒、%d 个并行、下载约 5 MB/秒估算）。"
+    lines.append(("这个目录" if st.get("only") else "首次备份") + "合计约 %s，预计耗时约 %s（按导出每份约 %d 秒、%d 个并行、下载约 5 MB/秒估算）。"
                  % (gb(total), _fmt_minutes(st["est_minutes"]), EXPORT_SECONDS_EACH, EXPORT_PARALLEL))
     lines.append("注意：以上不含群聊附件，群聊附件的体积要首次备份时才知道。")
     if st.get("walk_errors"):

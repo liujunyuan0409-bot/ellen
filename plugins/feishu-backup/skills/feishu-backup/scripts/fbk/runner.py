@@ -148,8 +148,10 @@ def _att_path(hit) -> str:
 
 class _Run:
     def __init__(self, client, store, root: Path, fetch, report: RunReport, reasons: _LastWarning,
-                 now: int, limit: Optional[int], lookback_days: int):
+                 now: int, limit: Optional[int], lookback_days: int, only: str = ""):
         self.client = client
+        self.only = only
+        self.only_key = walker.parse_only(only) if only else ()
         self.lookback_days = lookback_days
         self.store = store
         self.root = root
@@ -174,7 +176,7 @@ class _Run:
             with self._ids_lock:
                 self.file_fail_ids.add("item:" + item.token)
         elif outcome == Outcome.SKIPPED:
-            reason = "类型 %s 不支持导出" % item.type
+            reason = "%s，飞书不支持导出" % wizard.TYPE_LABEL.get(item.type, "类型 %s" % item.type)
         self.report.add(outcome, _item_path(item), reason)
 
     def phase(self, items, counted: bool):
@@ -212,11 +214,19 @@ class _Run:
 
     def drive(self):
         errors = []
-        self.phase(walker.walk_my_space(self.client, errors), counted=True)
-        self.phase(walker.walk_wiki(self.client, errors), counted=True)
+        for gen in (walker.walk_my_space(self.client, errors), walker.walk_wiki(self.client, errors)):
+            self.phase(walker.filter_only(gen, self.only_key) if self.only else gen, counted=True)
         self.walk_errors = errors
         for e in errors:
             self.report.error("%s：%s" % ("/".join(e.rel_dir), e.message))
+        if self.only:
+            if self.submitted:
+                self.report.note("本次只备份了「%s」（%d 项），未扫描群聊和共享搜索、未标记云端已删除，"
+                                 "不算一次完整备份，每周的定时备份照常进行" % (self.only, self.submitted))
+            else:
+                self.report.note("没有找到「%s」：路径要从「我的空间」或「知识库/空间名」往下写，"
+                                 "开头的「我的空间」可以省略；本次什么都没备份" % self.only)
+            return
         if self.limit is not None:
             self.report.note("本次为限量试跑（最多 %d 项），未扫描群聊和搜索，未标记云端已删除" % self.limit)
             return
@@ -375,14 +385,15 @@ _NO_WAIT_ABORTS = ("offline", "login_required", "disk_full", "tls")  # 不会重
 
 def _waiting_retry(row, now) -> bool:
     """上次是一次真实尝试且没读全（ok=0），距今不满 6 小时 → True。
-    冒烟跑（--limit，summary 里有 limit）和离线 / 需重新登录 / 磁盘满的中止不算「没读全」，不拖慢下次运行。"""
+    冒烟跑（--limit，summary 里有 limit）、单目录试跑（--only）和离线 / 需重新登录 / 磁盘满的中止不算「没读全」，不拖慢下次运行。"""
     if row is None or row["ok"]:
         return False
     try:
         summary = json.loads(row["summary"]) if row["summary"] else {}
     except ValueError:
         summary = {}
-    if not isinstance(summary, dict) or "limit" in summary or summary.get("中止") in _NO_WAIT_ABORTS:
+    if not isinstance(summary, dict) or "limit" in summary or "only" in summary \
+            or summary.get("中止") in _NO_WAIT_ABORTS:
         return False
     return int(now) - int(row["finished"]) < schedule.RETRY_AFTER_INCOMPLETE
 
@@ -464,8 +475,11 @@ def _report_paths(root: Path, now: int):
 
 
 def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = None, *,
-        transport=None, fetch=None, sleep=time.sleep) -> int:
-    """执行一轮备份，返回退出码。transport / fetch / sleep 仅供测试注入。"""
+        only: str = "", transport=None, fetch=None, sleep=time.sleep) -> int:
+    """执行一轮备份，返回退出码。only 非空时只备份这个目录（一次性试跑，不算完整备份，隐含 force）。
+    transport / fetch / sleep 仅供测试注入。"""
+    only = (only or "").strip()
+    force = force or bool(only)
     now = int(now if now is not None else time.time())
     reasons = _setup_logging(time.time())
     transport = transport or default_transport
@@ -522,14 +536,14 @@ def run(now: Optional[int] = None, force: bool = False, limit: Optional[int] = N
             return 2
         try:
             with awake.keep_awake():
-                return _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit)
+                return _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit, only)
         finally:
             lock.release()
     finally:
         store.close()
 
 
-def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> int:
+def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit, only="") -> int:
     n = fetcher.clean_parts(root)
     if n:
         log.info("清理了 %d 个中断留下的临时文件", n)
@@ -541,18 +555,22 @@ def _locked(cfg, root, store, transport, fetch, sleep, reasons, now, limit) -> i
         _probe(transport, tm.access_token())
         client = FeishuClient(tm.access_token, transport=transport, sleep=sleep)
         run_id = store.start_run()
-        r = _Run(client, store, root, fetch, report, reasons, now, limit, cfg.lookback_days)
+        r = _Run(client, store, root, fetch, report, reasons, now, limit, cfg.lookback_days, only)
         r.drive()
-        if limit is None:
+        full = limit is None and not only
+        if full:
             r.shared()
         log_path, csv_path = _report_paths(root, now)
-        gaps = perms.write_report(store, csv_path) if limit is None else {}
+        gaps = perms.write_report(store, csv_path) if full else {}
         summary = dict(report.summary(), **({"权限缺口": gaps} if gaps else {}))
         if limit is not None:
             summary["limit"] = limit  # 冒烟跑标记：不触发「没读全 6 小时重试」
+        if only:
+            summary["only"] = only  # 单目录试跑：同上，且不算一次完整成功
+            summary["only_items"] = r.submitted
         report.write_markdown(log_path, started, int(time.time()))
         # 遍历不完整也不算成功：下个小时醒来再跑（设计 §6.3）
-        store.finish_run(run_id, ok=limit is None and not r.walk_errors, summary=summary)
+        store.finish_run(run_id, ok=full and not r.walk_errors, summary=summary)
         log.info("本轮完成：%s", summary)
         _notify_failures(r)
         return 0

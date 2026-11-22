@@ -194,5 +194,37 @@ class WikiTest(unittest.TestCase):
         self.assertEqual([e.rel_dir for e in errs], [("知识库", "坏库")])
 
 
+
+class OnlyScopeTest(unittest.TestCase):
+    def it(self, *rel, name="报告"):
+        return RemoteItem("tok", "docx", name, tuple(rel), "my", 0)
+
+    def test_parse_only_splits_both_slashes_and_trims(self):
+        from fbk.walker import parse_only
+        self.assertEqual(parse_only(" 产品部\\质量文件/ "), ("产品部", "质量文件"))
+        self.assertEqual(parse_only(""), ())
+
+    def test_prefix_match_with_or_without_top_dir(self):
+        from fbk.walker import in_scope, parse_only
+        item = self.it("我的空间", "产品部", "质量文件", "质检记录")
+        self.assertTrue(in_scope(item, parse_only("产品部/质量文件")))
+        self.assertTrue(in_scope(item, parse_only("我的空间/产品部/质量文件")))
+        self.assertFalse(in_scope(item, parse_only("质量文件")))  # 不从中间匹配
+        self.assertFalse(in_scope(self.it("我的空间", "产品部", "质量文件2"), parse_only("产品部/质量文件")))
+
+    def test_case_insensitive_and_item_itself(self):
+        from fbk.walker import in_scope, parse_only
+        self.assertTrue(in_scope(self.it("我的空间", "Docs"), parse_only("docs")))
+        # 知识库页面本身（子页面的 rel_dir 才含它的标题）也算在范围里
+        page = self.it("知识库", "产品库", name="规范")
+        self.assertTrue(in_scope(page, parse_only("知识库/产品库/规范")))
+        self.assertTrue(in_scope(page, parse_only("产品库/规范")))
+
+    def test_filter_only(self):
+        from fbk.walker import filter_only, parse_only
+        items = [self.it("我的空间", "A"), self.it("我的空间", "B")]
+        self.assertEqual([i.rel_dir for i in filter_only(items, parse_only("A"))], [("我的空间", "A")])
+
+
 if __name__ == "__main__":
     unittest.main()

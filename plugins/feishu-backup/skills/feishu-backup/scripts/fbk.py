@@ -32,6 +32,8 @@ RUN_MEANING = {0: "正常结束（或还没到时间、已有备份在跑、网�
                2: "还没配置好，或备份目录不存在（外接盘没插？）", 3: "需要重新登录：运行 setup --login",
                4: "备份盘空间不足"}
 MARK = {"done": "✓", "failed": "✗", "todo": "–"}
+ONLY_FIX = ("路径从「我的空间」或「知识库/空间名」往下写，用 / 分隔，开头的「我的空间」可以省略；"
+            "拿不准就打开备份目录看文件夹名，或先运行 scan 看整体情况")
 
 
 # ---------------- 小工具 ----------------
@@ -358,17 +360,23 @@ def cmd_scan(args):
     cfg = _cfg_or_none()
     if cfg is None:
         return _fail(args, "还没有应用凭证", "先运行 setup --credentials")
+    only = (getattr(args, "only", None) or "").strip()
+    title = "只扫描「%s」" % only if only else "[6/7] 首次扫描"
     try:
-        st = wizard.scan_stats(_make_client(cfg))
+        st = wizard.scan_stats(_make_client(cfg), only=only)
     except Exception as e:  # noqa: BLE001
         d, f = wizard.explain(e)
-        return _checks_out(args, [wizard.Check("首次扫描", False, d, f)], "[6/7] 首次扫描")
+        return _checks_out(args, [wizard.Check("首次扫描", False, d, f)], title)
     if st["total_items"] == 0 and st["walk_errors"]:
         return _checks_out(args, [wizard.Check("首次扫描", False, "一项都没读到（%d 处目录读取失败）" % st["walk_errors"],
-                                               "先运行 doctor 体检，看是网络还是权限问题")], "[6/7] 首次扫描")
+                                               "先运行 doctor 体检，看是网络还是权限问题")], title)
+    if only and st["total_items"] == 0:
+        return _checks_out(args, [wizard.Check("找目录", False, "没有找到「%s」" % only,
+                                               ONLY_FIX)], title)
     st["at"] = int(time.time())
-    _save_state(SCAN_STATE, st)
-    text = "[6/7] 首次扫描\n" + wizard.format_scan(st)
+    if not only:  # 单目录扫描不算向导第 6 步
+        _save_state(SCAN_STATE, st)
+    text = title + "\n" + wizard.format_scan(st)
     checks = []
     if cfg.backup_root and Path(cfg.backup_root).is_dir():
         checks = wizard.check_root(cfg.backup_root, st["upload_bytes"] + st["export_est_bytes"])
@@ -380,10 +388,56 @@ def cmd_scan(args):
 
 def cmd_run(args):
     runner.install_term_handler()
-    code = runner.run(force=args.now, limit=args.limit)
-    _emit(args, {"exit_code": code, "meaning": RUN_MEANING.get(code, "")},
-          "本次结果：%s" % RUN_MEANING.get(code, "退出码 %s" % code))
+    only = (args.only or "").strip()
+    t0 = int(time.time())
+    code = runner.run(force=args.now, limit=args.limit, only=only)
+    data = {"exit_code": code, "meaning": RUN_MEANING.get(code, "")}
+    text = "本次结果：%s" % RUN_MEANING.get(code, "退出码 %s" % code)
+    lr = _this_run(t0)
+    if lr is not None:
+        data["run"] = lr
+        text += "\n" + _run_lines(lr)
+    _emit(args, data, text)
     return code
+
+
+def _this_run(t0: int):
+    """本次命令里真正跑了的那一轮（没到时间、已有备份在跑时没有）：起止时间、结果统计、日志位置。"""
+    cfg = _cfg_or_none()
+    root = Path(cfg.backup_root) if cfg and cfg.backup_root else None
+    db = root / schedule.STATE_DIR / "manifest.sqlite" if root else None
+    if not db or not db.exists():
+        return None
+    store = Store(db)
+    try:
+        rows = store._read("SELECT started, finished, ok, summary FROM runs WHERE started >= ? "
+                           "ORDER BY id DESC LIMIT 1", (t0 - 1,))
+    finally:
+        store.close()
+    if not rows or rows[0][1] is None:
+        return None
+    started, finished, ok, summary = rows[0]
+    return {"started": _fmt_ts(started), "finished": _fmt_ts(finished), "ok": bool(ok),
+            "summary": json.loads(summary) if summary else {},
+            "log": _newest(root / runner.REPORT_DIR, "*_备份日志.md")}
+
+
+_HIDDEN_KEYS = ("limit", "only", "only_items", "权限缺口")
+
+
+def _run_lines(lr) -> str:
+    s = lr["summary"]
+    counts = "，".join("%s %s" % (k, v) for k, v in s.items() if k not in _HIDDEN_KEYS) or "无"
+    lines = ["本轮 %s 开始、%s 结束。下面的结果只代表 %s 之前飞书上的状态，之后的新增和修改要等下一轮才知道。"
+             % (lr["started"], lr["finished"], lr["finished"]),
+             "结果：%s" % counts]
+    if s.get("only"):
+        lines.append("范围：只备份了「%s」（%s 项），不算一次完整备份" % (s["only"], s.get("only_items", 0)))
+        if not s.get("only_items"):
+            lines.append("✗ 没有找到「%s」。怎么办：%s" % (s["only"], ONLY_FIX))
+    if lr.get("log"):
+        lines.append("备份日志：%s" % lr["log"])
+    return "\n".join(lines)
 
 
 def _newest(d: Path, pattern):
@@ -462,8 +516,12 @@ def cmd_status(args):
                               if d["schedule_problems"] else ("已安装" if d["schedule_installed"] else "未安装"))]
     if d["last_run"]:
         lr = d["last_run"]
-        lines.append("最近一次运行：%s 开始，%s" % (lr["started"], "成功" if lr["ok"] else
-                                             ("还在跑或被中断" if lr["finished"] is None else "没有完全成功")))
+        only = (lr["summary"] or {}).get("only") if isinstance(lr["summary"], dict) else None
+        if only and lr["finished"] is not None:
+            state = "只备份了「%s」（单目录试跑，不算完整备份）" % only
+        else:
+            state = "成功" if lr["ok"] else ("还在跑或被中断" if lr["finished"] is None else "没有完全成功")
+        lines.append("最近一次运行：%s 开始，%s" % (lr["started"], state))
     for table, label in (("items", "云文档"), ("attachments", "群聊附件"), ("links", "群聊链接")):
         c = d["counts"][table]
         if c:
@@ -535,11 +593,15 @@ def build_parser():
                    help="把程序复制到本机固定位置并打印位置（不装定时任务）").set_defaults(func=cmd_install)
     sub.add_parser("login", parents=[common], help="重新登录（同 setup --login）").set_defaults(func=cmd_login)
     sub.add_parser("doctor", parents=[common], help="权限体检（8 项实测）").set_defaults(func=cmd_doctor)
-    sub.add_parser("scan", parents=[common], help="只统计不下载").set_defaults(func=cmd_scan)
+    sc_ = sub.add_parser("scan", parents=[common], help="只统计不下载")
+    sc_.add_argument("--only", metavar="目录", default=None, help="只统计这个目录")
+    sc_.set_defaults(func=cmd_scan)
 
     r = sub.add_parser("run", parents=[common], help="备份一次（不加 --now 时没到时间就跳过）")
     r.add_argument("--now", action="store_true", help="不管上次什么时候成功，现在就备份")
     r.add_argument("--limit", type=int, default=None, help=argparse.SUPPRESS)
+    r.add_argument("--only", metavar="目录", default=None,
+                   help="只备份这个目录（如「产品部/质量文件」），一次性试跑，不算完整备份，不改定时备份")
     r.set_defaults(func=cmd_run)
 
     sub.add_parser("status", parents=[common], help="备份状态").set_defaults(func=cmd_status)

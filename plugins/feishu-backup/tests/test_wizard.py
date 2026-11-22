@@ -704,13 +704,13 @@ class CliRunTest(CliBase):
         with mock.patch.object(runner, "run", return_value=3) as r:
             code, _ = self.cli("run", "--now", "--limit", "5")
         self.assertEqual(code, 3)
-        r.assert_called_once_with(force=True, limit=5)
+        r.assert_called_once_with(force=True, limit=5, only="")
 
     def test_run_default_respects_due(self):
         with mock.patch.object(runner, "run", return_value=0) as r:
             code, _ = self.cli("run")
         self.assertEqual(code, 0)
-        r.assert_called_once_with(force=False, limit=None)
+        r.assert_called_once_with(force=False, limit=None, only="")
 
     def _cfg(self):
         config.save_config(config.Config("cli_fake", "sec_fake", backup_root=Path(self.tmp.name)))
@@ -935,6 +935,32 @@ class CliRunTest(CliBase):
         code, out = self.cli("perms", "--json")
         self.assertEqual(code, 0)
         self.assertIsNone(json.loads(out)["report"])
+
+
+
+class CliOnlyTest(CliBase):
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(runner, "install_term_handler")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_run_only_passthrough(self):
+        with mock.patch.object(runner, "run", return_value=0) as r:
+            self.cli("run", "--only", "产品部/质量文件")
+        r.assert_called_once_with(force=False, limit=None, only="产品部/质量文件")
+
+    def test_run_lines_state_cutoff_time(self):
+        text = cli._run_lines({"started": "2026-11-17 22:40:00", "finished": "2026-11-17 22:41:05", "ok": True,
+                               "summary": {"新增": 1, "未变化": 290}, "log": None})
+        self.assertIn("只代表 2026-11-17 22:41:05 之前飞书上的状态", text)
+        self.assertIn("新增 1，未变化 290", text)
+
+    def test_run_lines_only_not_found(self):
+        text = cli._run_lines({"started": "a", "finished": "b", "ok": False,
+                               "summary": {"only": "X", "only_items": 0}, "log": None})
+        self.assertIn("✗ 没有找到「X」", text)
+        self.assertNotIn("only", text.split("范围")[0])  # 内部键不进结果统计
 
 
 if __name__ == "__main__":

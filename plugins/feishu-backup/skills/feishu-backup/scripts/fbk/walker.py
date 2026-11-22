@@ -1,7 +1,9 @@
 """遍历我的空间 / 知识库 / 快捷方式，产出 RemoteItem。只读。"""
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Iterable, Iterator, Optional
 
 from .client import ApiError
 from .names import sanitize
@@ -26,6 +28,36 @@ class RemoteItem:
 class WalkError:
     rel_dir: tuple
     message: str
+
+
+TOP_DIRS = ("我的空间", "知识库")
+
+
+def parse_only(text: str) -> tuple:
+    """把用户给的目录（「产品部/质量文件」「我的空间\\共享\\产品部」）拆成路径段，按备份目录的命名规则清洗。"""
+    parts = [p.strip() for p in re.split(r"[/\\]+", text or "")]
+    return tuple(_key(sanitize(p)) for p in parts if p)
+
+
+def _key(seg: str) -> str:
+    return unicodedata.normalize("NFC", seg).casefold()
+
+
+def in_scope(item: "RemoteItem", only: tuple) -> bool:
+    """item（连同它自己的名字）的路径以 only 开头。开头的「我的空间」「知识库」可以省略。不区分大小写。"""
+    if not only:
+        return True
+    path = tuple(_key(s) for s in tuple(item.rel_dir) + (sanitize(item.name or ""),))
+    n = len(only)
+    if path[:n] == only:
+        return True
+    return bool(path) and path[0] in {_key(t) for t in TOP_DIRS} and path[1:1 + n] == only
+
+
+def filter_only(items: Iterable["RemoteItem"], only: tuple) -> Iterator["RemoteItem"]:
+    for it in items:
+        if in_scope(it, only):
+            yield it
 
 
 def _record(errors, rel_dir, err):

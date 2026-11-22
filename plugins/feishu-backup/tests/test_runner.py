@@ -505,7 +505,7 @@ class OrchestrationTest(_OrchBase):
         self.run_it()
         text = self.report_text()
         self.assertIn("导出超时", text)
-        self.assertIn("mindnote", text)
+        self.assertIn("思维笔记，飞书不支持导出", text)
         arch = text.split("## 已归档的历史版本")[1]
         self.assertIn("我的空间/m2", arch)
 
@@ -992,6 +992,34 @@ class ReportTest(unittest.TestCase):
         self.assertIn("导出失败", text)
         self.assertIn("2 分 5 秒", text)
         self.assertEqual(r.counts[Outcome.UNCHANGED], 1)
+
+
+
+class OnlyRunTest(_OrchBase):
+    def test_only_backs_up_just_that_folder_and_is_not_a_full_success(self):
+        rec = _Recorder(slow=())
+        self.patch(sync, "sync_item", side_effect=rec)
+        self.setup_sources(my=[ri("in1", rel=("我的空间", "产品部", "质量文件")),
+                               ri("out1", rel=("我的空间", "销售部"))],
+                           wiki=[ri("w1", "wiki")])
+        self.assertEqual(self.run_it(force=False, only="产品部/质量文件"), 0)  # --only 隐含立即运行
+        self.assertEqual([c[1].token for c in rec.calls], ["in1"])
+        self.mark.assert_not_called()
+        self.scan.assert_not_called()
+        self.search.assert_not_called()
+        self.assertIsNone(self.store().last_success())
+        self.assertFalse(list((self.root / "_报告").glob("*_权限缺口.csv")))
+        summary = json.loads(self.store().last_run()["summary"])
+        self.assertEqual((summary["only"], summary["only_items"]), ("产品部/质量文件", 1))
+        self.assertIn("本次只备份了「产品部/质量文件」（1 项）", self.report_text())
+        self.assertFalse(runner._waiting_retry(self.store().last_run(), NOW))
+
+    def test_only_not_found_says_so(self):
+        self.patch(sync, "sync_item", side_effect=_Recorder(slow=()))
+        self.setup_sources(my=[ri("m1", rel=("我的空间", "A"))])
+        self.assertEqual(self.run_it(only="不存在"), 0)
+        self.assertIn("没有找到「不存在」", self.report_text())
+        self.assertEqual(json.loads(self.store().last_run()["summary"])["only_items"], 0)
 
 
 if __name__ == "__main__":
