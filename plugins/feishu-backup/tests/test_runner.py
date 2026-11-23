@@ -1024,3 +1024,13 @@ class OnlyRunTest(_OrchBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameNoteTest(unittest.TestCase):
+    def test_name_note_explains_rename_and_eviction(self):
+        ctx = sync.SyncContext(client=None, store=None, root=Path("."))
+        ctx.renamed["T"] = "周报 (tokBBB).pdf"
+        ctx.evicted["U"] = "合同_2026-11-10_1200.pdf"
+        self.assertIn("本地存为「周报 (tokBBB).pdf」", runner._name_note(ctx, "T"))
+        self.assertIn("历史版本/合同_2026-11-10_1200.pdf", runner._name_note(ctx, "U"))
+        self.assertEqual(runner._name_note(ctx, "T"), "")  # 取过就清掉

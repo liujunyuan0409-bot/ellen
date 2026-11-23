@@ -143,6 +143,18 @@ def _item_path(item) -> str:
     return "/".join(tuple(item.rel_dir) + (item.name or item.token,))
 
 
+def _name_note(ctx, token) -> str:
+    """同名文件的说明：本地实际存成什么名字、原名上的旧文件去了哪里。"""
+    parts = []
+    old = ctx.evicted.pop(token, None)
+    if old:
+        parts.append("原名被云端已删除的旧文件占着，旧文件已移入同目录「历史版本/%s」" % old)
+    name = ctx.renamed.pop(token, None)
+    if name:
+        parts.append("同一目录有同名文件，本地存为「%s」（括号里是飞书文件编号的前 6 位）" % name)
+    return "；".join(parts)
+
+
 def _att_path(hit) -> str:
     return "%s/%s/%s" % (chats.ATTACH_DIR, hit.chat_name or hit.chat_id, hit.file_name)
 
@@ -178,6 +190,8 @@ class _Run:
                 self.file_fail_ids.add("item:" + item.token)
         elif outcome == Outcome.SKIPPED:
             reason = "%s，飞书不支持导出" % wizard.TYPE_LABEL.get(item.type, "类型 %s" % item.type)
+        else:
+            reason = _name_note(self.ctx, item.token)
         self.report.add(outcome, _item_path(item), reason)
 
     def phase(self, items, counted: bool):

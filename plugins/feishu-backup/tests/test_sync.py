@@ -88,6 +88,55 @@ class SyncTest(unittest.TestCase):
         self.assertEqual((self.root / "知识库/库/方案.pdf 的子页面/方案.pdf").read_bytes(), b"c1")
         self.assertTrue((self.root / "知识库/库/方案.pdf 的子页面/附录.pdf").is_file())
 
+    def test_reupload_same_name_takes_original_name(self):
+        # 删掉「合同.pdf」又上传同名新文件：新文件用原名，旧文件移进 历史版本/
+        self.fetch.content.update({"OLD": b"old", "NEW": b"new"})
+        sync_item(self.ctx, item("OLD", "合同.pdf", ftype="file", mtime=T1))
+        mark_missing(self.store, set())
+        self.new_run()
+        self.assertEqual(sync_item(self.ctx, item("NEW", "合同.pdf", ftype="file", mtime=T2)), Outcome.NEW)
+        self.assertEqual((self.root / "我的空间/合同.pdf").read_bytes(), b"new")
+        old_row = self.store.get_item("OLD")
+        self.assertEqual(Path(old_row["local_path"]).parent.name, "历史版本")
+        self.assertEqual(Path(old_row["local_path"]).read_bytes(), b"old")
+        self.assertEqual(self.store.find_blob(fetcher.sha256_file(Path(old_row["local_path"]))),
+                         Path(old_row["local_path"]))  # 内容去重表跟着改
+        self.assertEqual(self.ctx.evicted["NEW"], Path(old_row["local_path"]).name)
+        self.assertNotIn("NEW", self.ctx.renamed)
+
+    def test_live_same_name_still_gets_suffix(self):
+        self.fetch.content.update({"tokAAAAAA": b"a", "tokBBBBBB": b"b"})
+        sync_item(self.ctx, item("tokAAAAAA", "周报"))
+        sync_item(self.ctx, item("tokBBBBBB", "周报"))
+        self.assertEqual((self.root / "我的空间/周报.pdf").read_bytes(), b"a")
+        self.assertEqual(self.ctx.renamed["tokBBBBBB"], "周报 (tokBBB).pdf")
+        self.assertNotIn("tokAAAAAA", self.ctx.renamed)
+
+    def test_deleted_file_shared_by_duplicate_not_evicted(self):
+        # 已删除的旧文件还被别的去重记录指着：不能挪，新文件照常换名
+        self.fetch.content.update({"OLD": b"same", "DUP": b"same", "NEW": b"new"})
+        sync_item(self.ctx, item("OLD", "合同.pdf", ftype="file"))
+        sync_item(self.ctx, item("DUP", "合同2.pdf", ftype="file"))
+        self.assertEqual(self.store.get_item("DUP")["status"], "duplicate")
+        self.store.set_status("OLD", "remote_deleted")
+        self.new_run()
+        sync_item(self.ctx, item("NEW", "合同.pdf", ftype="file", mtime=T2))
+        self.assertEqual((self.root / "我的空间/合同.pdf").read_bytes(), b"same")
+        self.assertIn("NEW", self.ctx.renamed)
+
+    def test_evicted_file_reappearing_comes_back_out_of_history(self):
+        self.fetch.content.update({"OLD": b"old", "NEW": b"new"})
+        sync_item(self.ctx, item("OLD", "合同.pdf", ftype="file", mtime=T1))
+        mark_missing(self.store, set())
+        self.new_run()
+        sync_item(self.ctx, item("NEW", "合同.pdf", ftype="file", mtime=T2))
+        self.new_run()  # 旧文件又出现在云端（例如从回收站恢复）
+        self.assertEqual(sync_item(self.ctx, item("OLD", "合同.pdf", ftype="file", mtime=T1)), Outcome.MOVED)
+        old = Path(self.store.get_item("OLD")["local_path"])
+        self.assertEqual(old.parent.name, "我的空间")
+        self.assertEqual(old.read_bytes(), b"old")
+        self.assertEqual((self.root / "我的空间/合同.pdf").read_bytes(), b"new")
+
     def new_run(self):
         self.ctx = SyncContext(client=None, store=self.store, root=self.root, fetch=self.fetch)
 

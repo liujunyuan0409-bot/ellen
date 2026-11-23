@@ -208,7 +208,17 @@ class Store:
     def set_status(self, token, status):
         self._write("UPDATE items SET status=? WHERE token=?", (status, token))
 
+    def refs_to_path(self, path):
+        """清单里指向 path 的条目：(items 行列表, attachments 行数)。路径按清单存法精确比较。"""
+        sp = self.to_stored(path)
+        items = [self._resolved(r) for r in self._read("SELECT * FROM items WHERE local_path=?", (sp,))]
+        n_att = self._read("SELECT COUNT(*) FROM attachments WHERE local_path=?", (sp,))[0][0]
+        return items, n_att
+
     # blobs
+    def repoint_blob(self, old, new):
+        self._write("UPDATE blobs SET local_path=? WHERE local_path=?", (self.to_stored(new), self.to_stored(old)))
+
     def find_blob(self, sha) -> Optional[Path]:
         rows = self._read("SELECT local_path FROM blobs WHERE sha256=?", (sha,))
         return Path(self.to_abs(rows[0][0])) if rows and rows[0][0] else None

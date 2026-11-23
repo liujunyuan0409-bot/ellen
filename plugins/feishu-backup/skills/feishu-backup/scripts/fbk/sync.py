@@ -68,6 +68,9 @@ class SyncContext:
     root: Path
     fetch: object = fetcher
     done: dict = field(default_factory=dict, repr=False)  # 本轮已作为主位置处理的 token -> 优先级
+    # 给报告用：token -> 本地实际文件名（同目录有同名文件、换了名时）；token -> 被移进历史版本的旧文件名
+    renamed: dict = field(default_factory=dict, repr=False)
+    evicted: dict = field(default_factory=dict, repr=False)
     _claim_lock: object = field(default_factory=threading.Lock, repr=False)
 
     def claim(self, token: str, prio: int) -> bool:
@@ -123,6 +126,31 @@ def archive_current(local: Path, old_mtime: int) -> Path:
         dest = unique_path(hist / version_name(local.name, int(old_mtime)))
         os.replace(lp(local), lp(dest))
     return dest
+
+
+def _evict_deleted(store, desired: Path) -> Optional[Path]:
+    """desired 被一个云端已删除的旧文件占着（典型：删掉后又上传了同名文件）时，把旧文件移进
+    同目录的 历史版本/，让新文件用回原名。只在旧文件完全归那一条已删除记录所有时才移；
+    有别的记录（去重、附件）指向它就不动，照常换名。返回旧文件的新位置，没移返回 None。调用方持有 _PLACE_LOCK。"""
+    if not _is_file(desired):
+        return None
+    rows, n_att = store.refs_to_path(desired)
+    if n_att or len(rows) != 1 or rows[0]["status"] != "remote_deleted":
+        return None
+    row = rows[0]
+    mtime = row["remote_mtime"] or int(os.stat(lp(desired)).st_mtime)
+    dest = archive_current(desired, mtime)
+    store.upsert_item(token=row["token"], local_path=dest)
+    store.repoint_blob(desired, dest)
+    log.info("云端已删除的旧文件让出原名，移入历史版本：%s → %s", desired, dest)
+    return dest
+
+
+def _note_name(ctx, token, desired: Path, target: Path, evicted: Optional[Path]) -> None:
+    if target != desired:
+        ctx.renamed[token] = target.name
+    if evicted is not None:
+        ctx.evicted[token] = evicted.name
 
 
 def _choose_path(desired: Path, token: str, cur: Optional[Path] = None) -> Path:
@@ -258,7 +286,9 @@ def _sync(ctx: SyncContext, item) -> Outcome:
     # 规则 4：位置或名字变了 → 移动当前文件和它的历史版本
     cur = owned
     with _PLACE_LOCK:
+        evicted = _evict_deleted(store, desired) if desired != cur else None
         target = _choose_path(desired, item.token, cur)
+        _note_name(ctx, item.token, desired, target, evicted)
         moved = target != cur
         if moved:
             os.makedirs(lp(target.parent), exist_ok=True)
@@ -297,8 +327,10 @@ def _new(ctx, item, desired: Path, base: dict) -> Outcome:
                                   remote_mtime=item.mtime, last_backup_at=int(time.time()), **base)
                 return Outcome.DUPLICATE
         with _PLACE_LOCK:  # 选名与落位原子化：目标已被占用就换名，绝不覆盖
+            evicted = _evict_deleted(store, desired)
             target = _choose_path(desired, item.token)
             os.replace(lp(tmp), lp(target))
+            _note_name(ctx, item.token, desired, target, evicted)
     finally:
         _drop_tmp(tmp)
     store.upsert_item(status="ok", local_path=target, sha256=sha, remote_mtime=item.mtime,
