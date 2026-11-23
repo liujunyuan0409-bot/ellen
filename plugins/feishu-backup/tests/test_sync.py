@@ -73,6 +73,21 @@ class SyncTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+    def test_wiki_file_node_with_children_all_saved(self):
+        # v0.3.0 的 bug：父节点落成文件「方案.pdf」后，子节点要建同名目录而失败（WinError 183）
+        from fbk.walker import wiki_child_dir
+        base = ("知识库", "库")
+        parent = RemoteItem("P", "file", "方案.pdf", base, "wiki", T1, True)
+        cdir = base + (wiki_child_dir("file", "方案.pdf"),)
+        kids = [RemoteItem("C1", "file", "方案.pdf", cdir, "wiki", T1),
+                RemoteItem("C2", "docx", "附录", cdir, "wiki", T1)]
+        self.fetch.content.update({"P": b"p", "C1": b"c1", "C2": b"c2"})
+        outs = [sync_item(self.ctx, it) for it in [parent] + kids]
+        self.assertEqual(outs, [Outcome.NEW] * 3)
+        self.assertEqual((self.root / "知识库/库/方案.pdf").read_bytes(), b"p")
+        self.assertEqual((self.root / "知识库/库/方案.pdf 的子页面/方案.pdf").read_bytes(), b"c1")
+        self.assertTrue((self.root / "知识库/库/方案.pdf 的子页面/附录.pdf").is_file())
+
     def new_run(self):
         self.ctx = SyncContext(client=None, store=self.store, root=self.root, fetch=self.fetch)
 

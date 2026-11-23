@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
+from .explain import is_limit
 from .names import SHANGHAI
 from .sync import Outcome
 
@@ -17,6 +18,7 @@ SECTIONS = [
     (Outcome.FAILED, "失败"),
 ]
 _LABEL = dict(SECTIONS + [(Outcome.UNCHANGED, "未变化")])
+LIMIT_LABEL = "其中飞书限制（需手动处理）"
 
 
 def _fmt_time(ts) -> str:
@@ -58,8 +60,15 @@ class RunReport:
         with self._lock:
             self.notes.append(msg)
 
+    def limited(self) -> List[Tuple[str, str]]:
+        """失败里属于飞书限制（程序绕不过去、要手动处理）的项。"""
+        return [(p, r) for o, p, r in self.entries if o == Outcome.FAILED and is_limit(r)]
+
     def summary(self) -> dict:
         d = {_LABEL[o]: n for o, n in self.counts.items() if n}
+        n_limit = len(self.limited())
+        if n_limit:
+            d[LIMIT_LABEL] = n_limit
         d["已归档的历史版本"] = self.counts[Outcome.UPDATED]
         d["遍历错误"] = len(self.errors)
         return d
@@ -73,17 +82,28 @@ class RunReport:
                  "- " + "，".join("%s %d" % (_LABEL[o], self.counts[o])
                                   for o in [o for o, _ in SECTIONS] + [Outcome.UNCHANGED]),
                  "- 已归档的历史版本 %d" % self.counts[Outcome.UPDATED]]
+        limited = self.limited()
+        if limited:
+            lines.append("- 失败里有 %d 项是飞书自身的限制，程序没法备份，需要手动处理，见「需手动处理」一节"
+                         % len(limited))
         for n in self.notes:
             lines.append("- %s" % n)
         lines.append("")
         for outcome, title in SECTIONS:
-            rows = [(p, r) for o, p, r in self.entries if o == outcome]
+            rows = [(p, r) for o, p, r in self.entries if o == outcome
+                    and not (outcome == Outcome.FAILED and is_limit(r))]
             lines += ["## %s" % title, ""]
             if not rows:
                 lines += ["无", ""]
                 continue
             for p, r in rows:
                 lines.append("- %s%s" % (p, "：%s" % r if r else ""))
+            lines.append("")
+        if limited:
+            lines += ["## 需手动处理（飞书限制）", "",
+                      "以下文件因为飞书自身的限制没法通过接口备份，每轮都会失败。"
+                      "需要的话请在飞书客户端里手动下载或另存为 PDF，放进对应目录。", ""]
+            lines += ["- %s%s" % (p, "：%s" % r if r else "") for p, r in limited]
             lines.append("")
         lines += ["## 已归档的历史版本", ""]
         upd = [p for o, p, _r in self.entries if o == Outcome.UPDATED]

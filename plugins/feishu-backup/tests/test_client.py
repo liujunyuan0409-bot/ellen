@@ -13,6 +13,7 @@ from tests.fakes import FakeTransport  # noqa: E402
 
 def make(t, **kw):
     sleeps = []
+    kw.setdefault("jitter", lambda: 0.0)
     c = FeishuClient(lambda: "tok", transport=t, sleep=sleeps.append, **kw)
     return c, sleeps
 
@@ -47,6 +48,36 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(len(t.calls), 3)
         self.assertIn(1, sleeps)
         self.assertIn(2, sleeps)
+
+    def test_rate_limit_code_with_plain_status_is_retried(self):
+        # 飞书限流有时不用 429，而是 HTTP 400 + code=99991400：也要退避重试
+        t = (FakeTransport().queue_json("GET", "/x", code=99991400, msg="request trigger frequency limit", status=400)
+             .queue_json("GET", "/x", {"a": 1}))
+        c, sleeps = make(t, rps=0)
+        self.assertEqual(c.get("/x"), {"a": 1})
+        self.assertEqual(len(t.calls), 2)
+        self.assertEqual(sleeps, [1])
+
+    def test_rate_limit_code_exhausted_raises_api_error(self):
+        t = FakeTransport().queue_json("GET", "/x", code=99991400, msg="limit", status=400)
+        c, _ = make(t, rps=0)
+        with self.assertRaises(ApiError) as cm:
+            c.get("/x")
+        self.assertEqual(cm.exception.code, 99991400)
+        self.assertEqual(len(t.calls), 6)
+
+    def test_rate_limit_backoff_has_jitter(self):
+        t = (FakeTransport().queue("GET", "/x", status=429).queue_json("GET", "/x", {"a": 1}))
+        c, sleeps = make(t, rps=0, jitter=lambda: 1.0)
+        c.get("/x")
+        self.assertEqual(sleeps, [1.5])
+
+    def test_other_business_error_not_retried(self):
+        t = FakeTransport().queue_json("GET", "/x", code=1069902, msg="no perm", status=400)
+        c, _ = make(t, rps=0)
+        with self.assertRaises(ApiError):
+            c.get("/x")
+        self.assertEqual(len(t.calls), 1)
 
     def test_gives_up_after_five_retries(self):
         t = FakeTransport().queue("GET", "/x", status=503)

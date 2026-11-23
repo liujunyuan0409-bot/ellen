@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import fetcher
+from .explain import explain
 from .auth import LoginRequired, NetworkError
 from .names import MAX_FS_BYTES, _fit, local_filename, unique_path, version_name
 from .platform.fsnames import is_taken, lp
@@ -205,7 +206,7 @@ def sync_item(ctx: SyncContext, item) -> Outcome:
     except (fetcher.DiskFull, LoginRequired, NetworkError):
         raise
     except Exception as e:  # noqa: BLE001 —— 单个文件失败不影响整轮
-        log.warning("同步失败：%s/%s（%s）", "/".join(item.rel_dir), item.name, e)
+        log.warning("同步失败：%s/%s（%s）", "/".join(item.rel_dir), item.name, explain(e, item.type))
         try:
             row = ctx.store.get_item(item.token)
             if row is not None and row["status"] in _NON_OWNING:

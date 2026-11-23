@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Iterator, Union
 
 from . import fetcher
+from .explain import explain
 from .client import ApiError
 from .names import EXPORT_EXT, SHANGHAI, sanitize, unique_path
 from .platform.fsnames import lp
@@ -190,7 +191,7 @@ def save_attachment(ctx, hit: AttachmentHit) -> Outcome:
             target = unique_path(desired)  # 被占用（不区分大小写）就换名，绝不覆盖
             os.replace(lp(tmp), lp(target))
     except (ApiError, OSError) as e:  # DiskFull / NetworkError / LoginRequired 不是这两类，照常抛出
-        log.warning("附件下载失败：%s/%s（%s）", hit.chat_name, hit.file_name, e)
+        log.warning("附件下载失败：%s/%s（%s）", hit.chat_name, hit.file_name, explain(e))
         store.upsert_attachment(hit.file_key, status="failed", **base)
         return Outcome.FAILED
     finally:

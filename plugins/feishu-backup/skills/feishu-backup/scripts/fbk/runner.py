@@ -22,6 +22,7 @@ from typing import Optional
 
 from . import auth, chats, config, fetcher, notify, perms, schedule, sync, walker, wizard
 from .client import DEFAULT_BASE, ApiError, FeishuClient, default_transport
+from .explain import explain
 from .names import SHANGHAI
 from .platform import awake
 from .report import RunReport
@@ -246,7 +247,7 @@ class _Run:
         except _FATAL:
             raise
         except Exception as e:  # noqa: BLE001
-            log.warning("附件保存失败：%s（%s）", _att_path(hit), e)
+            log.warning("附件保存失败：%s（%s）", _att_path(hit), explain(e))
             outcome = Outcome.FAILED
         reason = (self.reasons.take() or "未知原因，见日志") if outcome == Outcome.FAILED else ""
         if outcome == Outcome.FAILED:

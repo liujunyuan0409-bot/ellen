@@ -1,6 +1,7 @@
 """只读 HTTP 客户端：令牌桶限流、重试、POST 白名单、分页。只用标准库。"""
 import http.client
 import json
+import random
 import threading
 import time
 import urllib.error
@@ -48,6 +49,8 @@ class NetworkError(Exception):
 
 # 飞书「用户令牌无效 / 过期 / 被吊销」错误码
 TOKEN_INVALID_CODES = {99991663, 99991668, 99991677}
+# 飞书限流：有时是 HTTP 429，有时是普通 HTTP 状态（如 400）+ 业务码 99991400，两种都要退避重试
+RATE_LIMIT_CODES = {99991400}
 
 
 def default_transport(method, url, headers, body, stream_to=None, read_body=True, timeout=60):
@@ -70,6 +73,21 @@ def default_transport(method, url, headers, body, stream_to=None, read_body=True
         return e.code, dict(e.headers.items()) if e.headers else {}, e.read()
 
 
+def _rate_limit_code(raw):
+    """响应体是飞书限流业务码时返回该码，否则 None。"""
+    if not raw or b"99991" not in raw:
+        return None
+    try:
+        code = json.loads(raw.decode("utf-8")).get("code")
+    except (ValueError, AttributeError):
+        return None
+    return code if code in RATE_LIMIT_CODES else None
+
+
+def _is_rate_limited(e) -> bool:
+    return e.code == 429 or e.code in RATE_LIMIT_CODES
+
+
 def _header(headers, name):
     lname = name.lower()
     for k, v in (headers or {}).items():
@@ -80,13 +98,14 @@ def _header(headers, name):
 
 class FeishuClient:
     def __init__(self, token_provider, transport=default_transport, rps=5.0,
-                 base=DEFAULT_BASE, sleep=time.sleep, clock=time.monotonic):
+                 base=DEFAULT_BASE, sleep=time.sleep, clock=time.monotonic, jitter=random.random):
         self.token_provider = token_provider
         self.transport = transport
         self.rps = rps
         self.base = base.rstrip("/")
         self._sleep = sleep
         self._clock = clock
+        self._jitter = jitter
         self._lock = threading.Lock()
         self._next_slot = 0.0
 
@@ -125,12 +144,19 @@ class FeishuClient:
             except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException) as e:
                 last = e
             else:
-                if status != 429 and status < 500:
+                limited = _rate_limit_code(raw) if status < 500 else None
+                if limited is not None:
+                    last = ApiError(limited, "request trigger frequency limit")
+                elif status != 429 and status < 500:
                     return status, rh, raw
-                last = ApiError(status, "HTTP %s" % status)
+                else:
+                    last = ApiError(status, "HTTP %s" % status)
             if attempt < MAX_RETRIES:
-                self._sleep(2 ** attempt)
-        if isinstance(last, ApiError) and last.code == 429:
+                wait = 2 ** attempt
+                if isinstance(last, ApiError) and _is_rate_limited(last):
+                    wait *= 1 + 0.5 * self._jitter()  # 限流加抖动，避免多线程同一时刻一起重试
+                self._sleep(wait)
+        if isinstance(last, ApiError) and _is_rate_limited(last):
             raise last
         # 网络断开或 5xx 重试用尽：当作离线，由 runner 结束本轮（不记成功、不算文件失败）
         raise NetworkError("网络异常，稍后重试：%s" % last)

@@ -19,7 +19,9 @@ class DiskFull(Exception):
 
 
 class ExportFailed(Exception):
-    pass
+    def __init__(self, msg, job_status=None):
+        super().__init__(msg)
+        self.job_status = job_status
 
 
 def ensure_space(root: Path, need_bytes: int, margin: int = 2 * 1024 ** 3) -> None:
@@ -60,7 +62,7 @@ def export_to(client, token, ftype, dest, poll=2.0, timeout=300, sleep=time.slee
             if status == 0:
                 break
             if status not in (1, 2):
-                raise ExportFailed("导出失败 job_status=%s %s" % (status, res.get("job_error_msg", "")))
+                raise ExportFailed("导出失败 job_status=%s %s" % (status, res.get("job_error_msg", "")), status)
             if clock() >= deadline:
                 raise ExportFailed("导出超时（%s 秒）" % timeout)
             sleep(poll)

@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "feishu-backup" / "scripts"))
 
 from fbk.client import ApiError, FeishuClient  # noqa: E402
-from fbk.walker import RemoteItem, WalkError, walk_my_space, walk_wiki  # noqa: E402
+from fbk.walker import RemoteItem, WalkError, walk_my_space, walk_wiki, wiki_child_dir  # noqa: E402
 from tests.fakes import FakeTransport  # noqa: E402
 
 
@@ -167,6 +167,28 @@ class WikiTest(unittest.TestCase):
         qs = [c["query"] for c in t.calls if c["path"] == "/wiki/v2/spaces/S1/nodes"]
         self.assertNotIn("parent_node_token", qs[0])
         self.assertIn("parent_node_token=N1", qs[1])
+
+    def test_wiki_uploaded_file_with_children_gets_separate_dir(self):
+        # 上传文件保留原名「方案.pdf」，子节点目录若也叫「方案.pdf」就会和文件撞名
+        t = FakeTransport()
+        t.queue_json("GET", "/wiki/v2/spaces", {"items": [{"space_id": "S1", "name": "库"}], "has_more": False})
+        t.queue_json("GET", "/wiki/v2/spaces/S1/nodes",
+                     {"items": [self.node("N1", "O1", "方案.pdf", has_child=True, typ="file")], "has_more": False})
+        t.queue_json("GET", "/wiki/v2/spaces/S1/nodes",
+                     {"items": [self.node("N2", "O2", "方案.pdf", parent="N1", typ="file")], "has_more": False})
+        parent, child = list(walk_wiki(make(t)))
+        self.assertEqual(parent.rel_dir, ("知识库", "库"))
+        self.assertEqual(child.rel_dir, ("知识库", "库", "方案.pdf 的子页面"))
+
+    def test_wiki_child_dir_rule(self):
+        self.assertEqual(wiki_child_dir("docx", "方案"), "方案")  # 本体是「方案.pdf」，不撞
+        self.assertEqual(wiki_child_dir("file", "方案.PDF"), "方案.PDF 的子页面")
+        self.assertEqual(wiki_child_dir("file", "无扩展名"), "无扩展名 的子页面")
+        self.assertEqual(wiki_child_dir("mindnote", "导图"), "导图")  # 不落盘的类型不撞
+        long = "长" * 90  # 270 字节
+        d = wiki_child_dir("file", long)
+        self.assertTrue(d.endswith(" 的子页面"))
+        self.assertLessEqual(len(d.encode("utf-8")), 255)
 
     def test_wiki_sanitizes_and_missing_time(self):
         t = FakeTransport()

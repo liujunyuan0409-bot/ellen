@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable, Iterator, Optional
 
 from .client import ApiError
-from .names import sanitize
+from .names import MAX_FS_BYTES, _fit, local_filename, sanitize
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +31,18 @@ class WalkError:
 
 
 TOP_DIRS = ("我的空间", "知识库")
+CHILD_DIR_SUFFIX = " 的子页面"
+
+
+def wiki_child_dir(obj_type: str, title: str) -> str:
+    """知识库节点的子节点放在哪个目录。默认就是标题；节点自己落盘的文件名和它撞名时
+    （上传文件保留原名，如「方案.pdf」本体 + 「方案.pdf/」子目录），目录改叫「标题 的子页面」。
+    纯按名字算，每轮结果一样，不用记清单。"""
+    d = sanitize(title)
+    own = local_filename(obj_type, title)
+    if own is not None and _key(own) == _key(d):
+        return _fit(d, CHILD_DIR_SUFFIX, MAX_FS_BYTES)
+    return d
 
 
 def parse_only(text: str) -> tuple:
@@ -174,6 +186,6 @@ def walk_wiki(client, errors: Optional[list] = None) -> Iterator[RemoteItem]:
                 yield RemoteItem(n.get("obj_token"), n.get("obj_type"), title, rel_dir, "wiki",
                                  _int(n.get("obj_edit_time")), has_child)
                 if has_child:
-                    yield from walk(nt, rel_dir + (sanitize(title),))
+                    yield from walk(nt, rel_dir + (wiki_child_dir(n.get("obj_type"), title),))
 
         yield from walk(None, base)
