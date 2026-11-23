@@ -106,6 +106,7 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
   <div class="k">目录</div>
   <ol>
     <li><a href="#changes">v0.2 改了什么</a></li>
+    <li><a href="#changes03">v0.3 改了什么</a></li>
     <li><a href="#why">1 为什么做</a></li>
     <li><a href="#goals">2 目标与边界</a></li>
     <li><a href="#facts">3 实测结果</a></li>
@@ -120,7 +121,7 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
 
 <main>
 <header class="top">
-  <div class="meta"><span>版本 <b>v0.2</b></span><span>日期 <b>2026-11-15</b></span><span>插件 <b>plugins/feishu-backup/</b></span><span>平台 <b>macOS · Windows</b></span></div>
+  <div class="meta"><span>版本 <b>v0.3.2</b></span><span>日期 <b>2026-11-23</b></span><span>插件 <b>plugins/feishu-backup/</b></span><span>平台 <b>macOS · Windows</b></span></div>
   <h1>飞书文件自动备份 skill</h1>
   <p class="lede">把企业飞书里能看到的文件每周备份到本地电脑，改过的文件自动拉新版、旧版按日期归档，并列出打不开的文件。不管是 Mac 还是 Windows、用哪个 AI 助手，把链接发给 AI 就能装好。</p>
   <p style="margin:14px 0 0"><span class="status">草稿 · 待审阅</span></p>
@@ -136,6 +137,20 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
       <tr><td>系统</td><td>只支持 macOS</td><td>macOS + Windows</td></tr>
       <tr><td>AI 工具</td><td>只适配 Claude Code</td><td>任何 AI 助手：拿到 GitHub 链接就能带着完成安装和第一次使用</td></tr>
       <tr><td>遗留小问题</td><td>2 个边缘问题未修</td><td>修掉（见 6.11）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="changes03">
+  <span class="tab">v0.3</span>
+  <h2>v0.2 之后改了什么</h2>
+  <p>起因是两次 Windows 真机使用的反馈：11-17 单目录试跑，11-23 首轮完整备份（4660 个文件 / 30 GB）。</p>
+  <div class="tablewrap"><table class="diff">
+    <thead><tr><th>版本</th><th>改动</th></tr></thead>
+    <tbody>
+      <tr><td>v0.3.0</td><td>加单目录试跑（<code>run --only</code>）；每次跑完写明结果截至几点；要求 AI 只用本程序的命令，不自己另写一套备份</td></tr>
+      <tr><td>v0.3.1</td><td>修掉知识库里上传的文件下面挂子页面时子页面全部失败；飞书另一种形式的限流也会等待重试；程序显示的版本号和实际一致；飞书自己不让下载或导出的文件在日志里单独列出</td></tr>
+      <tr><td>v0.3.2</td><td>删掉后重新上传的同名文件用回原名，旧文件进历史版本；日志写明同名文件在本地存成了什么名字</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -251,6 +266,8 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
     <li>登录和第一次备份耗时长：能后台运行就后台运行；不能的话告诉用户窗口别关，或指导在系统终端里运行。</li>
     <li>输入 App Secret 的弹窗最多等 5 分钟，提醒用户留意。</li>
     <li><strong>绝不在对话里索要、接收或复述 App Secret</strong>；用户贴进来了，就提醒去后台重置。</li>
+    <li><strong>只用本程序的命令</strong><span class="tag">v0.3</span>：不自己写脚本调飞书接口、不改用其他工具、不自己比对本地文件；用户要的功能没有，就直接说做不到。</li>
+    <li><strong>转述结果要带截至时间</strong><span class="tag">v0.3</span>：结果只代表那一轮结束之前的状态；改名、移动看日志的「移动」，不要说成删除加新增。</li>
   </ul>
 
   <h3>本地目录结构（两个系统相同）</h3>
@@ -275,6 +292,7 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
     <li>不用管。出错、需要重新登录、定时任务失效、连续两周没备份成功时，弹系统通知。</li>
     <li>说「飞书备份状态」：上次成功时间、下次计划时间、失败清单、定时任务是否正常。</li>
     <li>说「现在备份一次」：立即运行，不受每周时间限制。</li>
+    <li>说「先只备份某个文件夹试试」<span class="tag">v0.3</span>：只备份这一个目录，不算一次完整备份，每周定时照常全量。</li>
     <li>说「看权限缺口」：打开最新的缺口清单并总结。</li>
     <li>说「把备份时间改成每周五晚上 8 点」：改好并重装定时任务。</li>
   </ul>
@@ -339,17 +357,20 @@ footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-si
     <li>飞书上改过：新版先下到临时文件，成功后把旧版移到同目录 <code>历史版本/原名_YYYY-MM-DD_HHMM</code>，再放入新版。云端删了：<strong>本地一律不删</strong>。</li>
     <li>清单存相对路径，备份文件夹拷到别处或别的电脑能直接续上。</li>
     <li><strong>文件名统一用两个系统都合法的写法</strong><span class="tag">v0.2</span>：<code>/ \ : * ? " &lt; &gt; |</code> 换成 <code>_</code>；去掉结尾空格和点；<code>CON</code>、<code>NUL</code> 等 Windows 保留名前面加 <code>_</code>；同名判断不区分大小写，重名时加上编号后缀。</li>
+    <li><strong>同名文件</strong><span class="tag">v0.3.2</span>：程序按飞书给每个文件的固定编号认文件，不看名字。同一目录里两个不同文件同名时，后来的存成 <code>名字 (编号前 6 位).扩展名</code>，日志写明。飞书上删掉后又上传同名文件时，旧文件移进 <code>历史版本/</code>，新文件用原名；旧文件还被别的记录共用时不移，新文件照常加后缀。</li>
+    <li><strong>知识库子页面目录</strong><span class="tag">v0.3.1</span>：子页面默认放在以上级标题命名的目录里。上级是上传的文件时（保留原名，如「方案.pdf」），目录会和文件同名，这时改叫 <code>方案.pdf 的子页面/</code>。在线文档导出时加了扩展名，不会撞。</li>
     <li><strong>Windows 长路径</strong>：文件操作用 <code>\\?\</code> 前缀绕过 260 字符限制；向导建议把备份目录放在浅层，例如 <code>D:\飞书备份</code>。</li>
   </ul>
 
   <h3>6.7 只读与权限</h3>
   <p>程序内置白名单，只允许读取类请求；登录只申请 24 项只读权限。因为授权是累计的，README 写明如何撤销授权后重新登录，得到真正只读的令牌。</p>
 
-  <h3>6.8–6.10 报告与重试（与 v0.1.0 相同）</h3>
+  <h3>6.8–6.10 报告与重试</h3>
   <ul>
     <li>权限缺口表：能打开 / 无权限 / 已删除或无效 / 待重试，附分享人、群名、时间。</li>
     <li>运行报告每次一份：<code>日期_时间_备份日志.md</code>。</li>
-    <li>限流和出错自动重试；断网算离线，下个小时重试；登录失效通知重新登录；失败名单变化时才通知。</li>
+    <li>飞书自身的限制单列一节「需手动处理」<span class="tag">v0.3.1</span>：群里超过下载上限的大文件、超过导出上限的大文档，程序绕不过去，每轮都会失败，提示用户手动下载或另存为 PDF，和真正的失败分开。失败原因写成大白话。</li>
+    <li>限流和出错自动重试；断网算离线，下个小时重试；登录失效通知重新登录；失败名单变化时才通知。飞书有时不用 429 而用普通状态码加限流码返回限流，这种也会重试，等待时间加随机抖动<span class="tag">v0.3.1</span>。</li>
   </ul>
 
   <h3>6.11 修掉的两个小问题<span class="tag">v0.2</span></h3>
